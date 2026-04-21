@@ -28,6 +28,7 @@ function App() {
     if (!sseReady) return; // Wait for SSE to connect first
     
     async function loadPhotos() {
+      let hadCachedPhotos = false;
       try {
         setError(null);
         
@@ -35,6 +36,7 @@ function App() {
         const cachedPhotos = await getCachedPhotos();
         
         if (cachedPhotos && cachedPhotos.length > 0) {
+          hadCachedPhotos = true;
           console.log(`Loaded ${cachedPhotos.length} photos from cache`);
           setPhotos(cachedPhotos);
           selectDefaultPhoto(cachedPhotos);
@@ -72,8 +74,8 @@ function App() {
         
       } catch (err) {
         console.error('Error fetching photos:', err);
-        // Only show error if we have no cached data
-        if (photos.length === 0) {
+        // Only show error if we have no cached data (avoid stale `photos` from render closure)
+        if (!hadCachedPhotos) {
           setError(err.message);
         }
       } finally {

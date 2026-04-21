@@ -35,12 +35,22 @@ if (!fs.existsSync(THUMBNAILS_DIR)) {
   fs.mkdirSync(THUMBNAILS_DIR, { recursive: true });
 }
 
+/**
+ * True when filePath resolves to a path inside rootDir (handles ".." and Windows vs POSIX).
+ */
+function isResolvedPathInsideDir(filePath, rootDir) {
+  const resolvedFile = path.resolve(filePath);
+  const resolvedRoot = path.resolve(rootDir);
+  const relative = path.relative(resolvedRoot, resolvedFile);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
 ///
 
 const execAsync = promisify(exec);
 
 const app = express();
-const PORT = 3002;
+const PORT = config.port;
 
 // Enable CORS for React frontend
 app.use(cors());
@@ -208,6 +218,10 @@ async function generateThumbnail(filename) {
   const sourcePath = (filename.includes('/') || filename.includes('\\')) 
     ? filename 
     : path.join(IMAGES_DIR, filename);
+  if (!isResolvedPathInsideDir(sourcePath, IMAGES_DIR)) {
+    console.warn(`Rejected thumbnail request outside images dir: ${filename}`);
+    return null;
+  }
   const thumbnailPath = getThumbnailPath(filename);
 
   // Skip if valid thumbnail already exists
@@ -458,7 +472,7 @@ app.get('/images/:filename', async (req, res) => {
   const wantsThumbnail = req.query.thumb === 'true';
 
   // Security: ensure we're not serving files outside the images directory
-  if (!filePath.startsWith(IMAGES_DIR)) {
+  if (!isResolvedPathInsideDir(filePath, IMAGES_DIR)) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
@@ -528,14 +542,14 @@ app.get('/images/:filename', async (req, res) => {
       
       // Actual HEIC file - convert with heic-convert
       if (actualFormat === 'heic') {
-      const outputBuffer = await heicConvert({
-        buffer: inputBuffer,
-        format: 'JPEG',
-        quality: 0.9
-      });
-      res.set('Content-Type', 'image/jpeg');
-      res.set('Cache-Control', 'public, max-age=86400');
-      return res.send(outputBuffer);
+        const outputBuffer = await heicConvert({
+          buffer: inputBuffer,
+          format: 'JPEG',
+          quality: 0.9
+        });
+        res.set('Content-Type', 'image/jpeg');
+        res.set('Cache-Control', 'public, max-age=86400');
+        return res.send(outputBuffer);
       }
     } catch (e) {
       console.error(`Failed to convert full HEIC ${filename}:`, e);
