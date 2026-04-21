@@ -1,0 +1,40 @@
+{
+  "name": "whenwhere",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "date-fns": "^3.0.0",
+    "leaflet": "^1.9.4",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-leaflet": "^4.2.1",
+    "react-leaflet-cluster": "^2.1.0",
+    "react-scripts": "5.0.1",
+    "react-window": "^1.8.10"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "scripts": {
+    "start": "concurrently --names \"server,frontend\" --prefix-colors \"blue,green\" \"npm run server\" \"npm run frontend\"",
+    "dev": "concurrently --names \"server,frontend\" --prefix-colors \"blue,green\" \"npm run server:dev\" \"npm run frontend\"",
+    "frontend": "react-scripts start",
+    "server": "cd server && npm start",
+    "server:dev": "cd server && npm run dev",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  }
+}

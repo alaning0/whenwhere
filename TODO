@@ -1,0 +1,40 @@
+# WhenWhere TODO
+
+## Completed
+- [x] HEIC thumbnail generation (using sharp + heic-convert)
+- [x] Multiple metadata adapters (EXIF, XMP, Google Takeout)
+- [x] Folder path configuration via .env file
+- [x] Thumbnail generation progress monitoring
+- [x] Recursive directory scanning for Google Photos structure
+- [x] Rename project to WhenWhere
+- [x] Centralized configuration system
+- [x] Clean up code duplication in adapters
+
+## Future Enhancements
+
+### UI Features
+- [ ] In-app folder path selection (currently requires .env edit)
+- [ ] Save user preferences (view mode, filters) to localStorage
+- [ ] Dark/light theme toggle
+- [ ] Photo editing metadata viewer
+
+### Performance
+- [ ] Video thumbnail extraction
+- [ ] Video EXIF/metadata reading
+- [ ] Incremental scanning (detect new files only)
+- [ ] SQLite database for faster re-scanning
+
+### Export/Import
+- [ ] Export selected photos
+- [ ] Batch operations on selections
+- [ ] Integration with other photo managers
+
+## Notes
+
+### osxphotos Export Command
+```bash
+osxphotos export /path/to/export \
+  --sidecar xmp \
+  --download-missing \
+  --verbose
+```
