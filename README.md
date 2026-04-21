@@ -2,7 +2,7 @@
 
 Visualize your photos on interactive maps and timelines using GPS metadata from EXIF, XMP sidecars, or Google Photos Takeout exports.
 
-<img width="1424" height="843" alt="image" src="https://github.com/user-attachments/assets/4b863fea-e5ab-4f2b-a74b-954199577bd5" />
+<img width="1424" height="843" alt="image" src="screenshot.png" />
 
 ## Features
 
