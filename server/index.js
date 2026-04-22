@@ -131,7 +131,7 @@ let backgroundGenerationInProgress = false;
 // Cache for thumbnail status (avoid counting 4000+ files on every request)
 let thumbnailStatusCache = null;
 let thumbnailStatusCacheTime = null;
-const THUMBNAIL_STATUS_CACHE_DURATION = 5000; // 5 seconds
+const THUMBNAIL_STATUS_CACHE_DURATION = 30000; // 30 seconds
 
 // Priority queue for viewport-first thumbnail generation
 let priorityQueue = [];
@@ -261,7 +261,7 @@ async function generateThumbnail(filename) {
 
   try {
     // Read file and detect actual format
-    const inputBuffer = await fsp.readFile(filePath);
+    const inputBuffer = await fsp.readFile(sourcePath);
     const actualFormat = detectImageFormat(inputBuffer);
     
     // Skip files with unknown/unsupported formats or videos
@@ -692,9 +692,23 @@ app.get('/api/thumbnails/status', async (req, res) => {
     return res.json(thumbnailStatusCache);
   }
   
-  // Calculate fresh status (expensive operation)
+  // Calculate fresh status (optimized: read directory once)
   const imagePhotos = photos.filter(p => p.hasMediaFile && p.isImage);
-  const generated = (await Promise.all(imagePhotos.map(p => thumbnailExists(p.filename)))).filter(Boolean).length;
+  
+  let generated = 0;
+  try {
+    const thumbFiles = await fsp.readdir(THUMBNAILS_DIR);
+    const thumbSet = new Set(thumbFiles);
+    
+    generated = imagePhotos.filter(p => {
+      const thumbPath = getThumbnailPath(p.filename);
+      return thumbSet.has(path.basename(thumbPath));
+    }).length;
+  } catch (error) {
+    console.error('Error reading thumbnails directory:', error);
+    // Fallback if directory doesn't exist yet
+  }
+
   const percentage = imagePhotos.length > 0 ? Math.round((generated / imagePhotos.length) * 100) : 0;
 
   thumbnailStatusCache = {

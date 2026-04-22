@@ -8,7 +8,6 @@ function StatusPopover() {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(false);
   const popoverRef = useRef(null);
-  const intervalRef = useRef(null);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -25,28 +24,31 @@ function StatusPopover() {
     }
   }, []);
 
-  // Fetch status when popover opens
+  // Initial fetch on mount
   useEffect(() => {
-    if (isOpen) {
-      fetchStatus();
-      // Poll every 3 seconds while open and generation in progress
-      intervalRef.current = setInterval(() => {
-        if (status?.inProgress) {
-          fetchStatus();
-        }
-      }, 3000);
-    } else {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
+    fetchStatus();
+  }, [fetchStatus]);
+
+  // Handle polling when open or background task is in progress
+  useEffect(() => {
+    let intervalId;
+    
+    // Poll more frequently when open, less frequently when closed but processing
+    const shouldPoll = isOpen || (status?.inProgress);
+    const intervalTime = isOpen ? 3000 : 10000;
+
+    if (shouldPoll) {
+      intervalId = setInterval(() => {
+        fetchStatus();
+      }, intervalTime);
     }
 
     return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
+      if (intervalId) {
+        clearInterval(intervalId);
       }
     };
-  }, [isOpen, fetchStatus, status?.inProgress]);
+  }, [isOpen, status?.inProgress, fetchStatus]);
 
   // Close popover when clicking outside
   useEffect(() => {
