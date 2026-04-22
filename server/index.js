@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
+import fsp from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
 import { exec } from 'child_process';
@@ -156,14 +157,15 @@ function getThumbnailPath(filename) {
 /**
  * Check if thumbnail exists for a file (and has content)
  */
-function thumbnailExists(filename) {
+async function thumbnailExists(filename) {
   const thumbPath = getThumbnailPath(filename);
-  if (!fs.existsSync(thumbPath)) {
+  try {
+    await fsp.access(thumbPath, fs.constants.F_OK); // Check if file exists
+    const stats = await fsp.stat(thumbPath);
+    return stats.size > 0; // Check file has actual content (not 0 bytes)
+  } catch (e) {
     return false;
   }
-  // Check file has actual content (not 0 bytes)
-  const stats = fs.statSync(thumbPath);
-  return stats.size > 0;
 }
 
 /**
@@ -185,7 +187,7 @@ async function convertHeicToJpeg(heicPath, filename) {
   const tempJpegPath = path.join(THUMBNAILS_DIR, tempFilename);
 
   try {
-    const inputBuffer = fs.readFileSync(heicPath);
+    const inputBuffer = await fsp.readFile(heicPath);
     const actualFormat = detectImageFormat(inputBuffer);
     
     // If it's already JPEG/PNG/etc (not actually HEIC), use Sharp directly
@@ -201,7 +203,7 @@ async function convertHeicToJpeg(heicPath, filename) {
       quality: 1
     });
 
-    fs.writeFileSync(tempJpegPath, outputBuffer);
+    await fsp.writeFile(tempJpegPath, outputBuffer);
     return { path: tempJpegPath, needsCleanup: true, isAlreadyImage: false };
   } catch (error) {
     console.error(`HEIC conversion failed for ${heicPath}:`, error.message);
@@ -225,14 +227,15 @@ async function generateThumbnail(filename) {
   const thumbnailPath = getThumbnailPath(filename);
 
   // Skip if valid thumbnail already exists
-  if (thumbnailExists(filename)) {
+  if (await thumbnailExists(filename)) {
     return thumbnailPath;
   }
 
   // Delete empty/corrupt thumbnail if it exists
-  if (fs.existsSync(thumbnailPath)) {
+  try {
+    await fsp.access(thumbnailPath, fs.constants.F_OK); // Check if file exists
     try {
-      fs.unlinkSync(thumbnailPath);
+      await fsp.unlink(thumbnailPath);
     } catch (e) {
       // File might be busy (being served), skip regeneration for now
       if (e.code === 'EBUSY') {
@@ -241,10 +244,14 @@ async function generateThumbnail(filename) {
       // For other errors, log and continue
       console.warn(`Could not delete corrupt thumbnail ${filename}:`, e.code);
     }
+  } catch (e) {
+    // Thumbnail doesn't exist, no need to delete
   }
 
   // Skip if source doesn't exist
-  if (!fs.existsSync(sourcePath)) {
+  try {
+    await fsp.access(sourcePath, fs.constants.F_OK);
+  } catch (e) {
     return null;
   }
 
@@ -254,7 +261,7 @@ async function generateThumbnail(filename) {
 
   try {
     // Read file and detect actual format
-    const inputBuffer = fs.readFileSync(sourcePath);
+    const inputBuffer = await fsp.readFile(filePath);
     const actualFormat = detectImageFormat(inputBuffer);
     
     // Skip files with unknown/unsupported formats or videos
@@ -301,11 +308,16 @@ async function generateThumbnail(filename) {
     return null;
   } finally {
     // Clean up temp file if created
-    if (tempFile && fs.existsSync(tempFile)) {
+    if (tempFile) {
       try {
-        fs.unlinkSync(tempFile);
+        await fsp.access(tempFile, fs.constants.F_OK); // Check if file exists
+        try {
+          await fsp.unlink(tempFile);
+        } catch (e) {
+          // Ignore cleanup errors
+        }
       } catch (e) {
-        // Ignore cleanup errors
+        // tempFile does not exist
       }
     }
   }
@@ -476,7 +488,9 @@ app.get('/images/:filename', async (req, res) => {
     return res.status(403).json({ error: 'Access denied' });
   }
 
-  if (!fs.existsSync(filePath)) {
+  try {
+    await fsp.access(filePath, fs.constants.F_OK);
+  } catch (e) {
     return res.status(404).json({ error: 'Media not found' });
   }
 
@@ -487,10 +501,13 @@ app.get('/images/:filename', async (req, res) => {
     const thumbnailPath = getThumbnailPath(filename);
 
     // Check if thumbnail already exists
-    if (fs.existsSync(thumbnailPath)) {
+    try {
+      await fsp.access(thumbnailPath, fs.constants.F_OK);
       res.set('Content-Type', 'image/webp');
       res.set('Cache-Control', 'public, max-age=604800'); // 1 week cache for thumbnails
       return res.sendFile(thumbnailPath);
+    } catch (e) {
+      // Thumbnail does not exist, proceed to generate
     }
 
     // Generate thumbnail on-demand
@@ -510,7 +527,7 @@ app.get('/images/:filename', async (req, res) => {
     // If browser requesting image, it likely can't show HEIC
     // We convert it on the fly to JPEG
     try {
-      const inputBuffer = fs.readFileSync(filePath);
+      const inputBuffer = await fsp.readFile(filePath);
       const actualFormat = detectImageFormat(inputBuffer);
       
       // If it's already JPEG/PNG/etc (mislabeled .heic file), serve with Sharp conversion
@@ -607,7 +624,10 @@ app.post('/api/thumbnails/priority', express.json(), async (req, res) => {
   }
   
   // Filter to only files that need thumbnails
-  const needsGeneration = filenames.filter(filename => !thumbnailExists(filename));
+  const needsGeneration = await Promise.all(filenames.map(async filename => {
+    const exists = await thumbnailExists(filename);
+    return exists ? null : filename;
+  })).then(results => results.filter(Boolean));
   
   if (needsGeneration.length === 0) {
     return res.json({ queued: 0, message: 'All thumbnails already exist' });
@@ -644,7 +664,7 @@ async function processPriorityQueue() {
     const filename = priorityQueue.shift();
     
     // Skip if already generated (might have been done by background worker)
-    if (thumbnailExists(filename)) {
+    if (await thumbnailExists(filename)) {
       continue;
     }
     
@@ -674,7 +694,7 @@ app.get('/api/thumbnails/status', (req, res) => {
   
   // Calculate fresh status (expensive operation)
   const imagePhotos = photos.filter(p => p.hasMediaFile && p.isImage);
-  const generated = imagePhotos.filter(p => thumbnailExists(p.filename)).length;
+  const generated = (await Promise.all(imagePhotos.map(p => thumbnailExists(p.filename)))).filter(Boolean).length;
   const percentage = imagePhotos.length > 0 ? Math.round((generated / imagePhotos.length) * 100) : 0;
 
   thumbnailStatusCache = {
@@ -709,7 +729,10 @@ async function startBackgroundThumbnailGeneration() {
   try {
     const photos = await scanImages();
     const imagePhotos = photos.filter(p => p.hasMediaFile && p.isImage);
-    const needsThumbnail = imagePhotos.filter(p => !thumbnailExists(p.filename));
+    const needsThumbnail = await Promise.all(imagePhotos.map(async p => {
+      const exists = await thumbnailExists(p.filename);
+      return exists ? null : p;
+    })).then(results => results.filter(Boolean));
 
     if (needsThumbnail.length === 0) {
       console.log('✅ All thumbnails already generated');
@@ -731,7 +754,7 @@ async function startBackgroundThumbnailGeneration() {
       }
       
       // Skip if already generated (might have been done by priority processing)
-      if (thumbnailExists(photo.filename)) {
+      if (await thumbnailExists(photo.filename)) {
         continue;
       }
       
@@ -761,7 +784,12 @@ async function startBackgroundThumbnailGeneration() {
 }
 
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
+  // Ensure thumbnails directory exists
+  await fsp.mkdir(THUMBNAILS_DIR, { recursive: true }).catch(err => {
+    if (err.code !== 'EEXIST') throw err;
+  });
+
   const adapterInfo = metadataAdapter.getAdapterInfo();
   console.log(`\n🗺️  Photo Explorer Server running at http://localhost:${PORT}`);
   console.log(`📁 Serving media from: ${IMAGES_DIR}`);
