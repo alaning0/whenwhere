@@ -680,7 +680,7 @@ async function processPriorityQueue() {
 /**
  * Get thumbnail generation status (with caching for performance)
  */
-app.get('/api/thumbnails/status', (req, res) => {
+app.get('/api/thumbnails/status', async (req, res) => {
   const now = Date.now();
   const photos = photoCache || [];
   
