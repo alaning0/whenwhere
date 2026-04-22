@@ -59,6 +59,7 @@ app.use(cors());
 // Thumbnail settings
 const THUMBNAIL_WIDTH = 300;
 const THUMBNAIL_QUALITY = 80;
+const THUMBNAIL_CONCURRENCY = 2; // Process 2 thumbnails in parallel
 
 // Get supported extensions from adapter
 const { IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, MEDIA_EXTENSIONS } = metadataAdapter;
@@ -169,44 +170,18 @@ async function thumbnailExists(filename) {
 }
 
 /**
- * Convert HEIC to JPEG using heic-convert
- * Returns { path, needsCleanup } - path to JPEG file, and whether it's a temp file
- * If file is already JPEG/PNG, returns original path with needsCleanup=false
+ * Fallback HEIC conversion using heic-convert library
+ * Used when Sharp fails due to missing decoding plugins
  */
-async function convertHeicToJpeg(heicPath, filename) {
-  // Put temp file in thumbnails directory to avoid polluting Content folder
-  // Handle full paths by extracting basename and adding hash for uniqueness
-  const basename = path.basename(filename);
-  let tempFilename;
-  if (filename.includes('/') || filename.includes('\\')) {
-    const hash = crypto.createHash('md5').update(filename).digest('hex').substring(0, 8);
-    tempFilename = `${hash}_${basename}_temp.jpg`;
-  } else {
-    tempFilename = `${basename}_temp.jpg`;
-  }
-  const tempJpegPath = path.join(THUMBNAILS_DIR, tempFilename);
-
+async function convertHeicBufferToJpeg(buffer) {
   try {
-    const inputBuffer = await fsp.readFile(heicPath);
-    const actualFormat = detectImageFormat(inputBuffer);
-    
-    // If it's already JPEG/PNG/etc (not actually HEIC), use Sharp directly
-    if (actualFormat && actualFormat !== 'heic') {
-      console.log(`File ${filename} has .heic extension but is actually ${actualFormat}, processing directly`);
-      return { path: heicPath, needsCleanup: false, isAlreadyImage: true };
-    }
-    
-    // Actual HEIC file - convert with heic-convert
-    const outputBuffer = await heicConvert({
-      buffer: inputBuffer,
+    return await heicConvert({
+      buffer: buffer,
       format: 'JPEG',
       quality: 1
     });
-
-    await fsp.writeFile(tempJpegPath, outputBuffer);
-    return { path: tempJpegPath, needsCleanup: true, isAlreadyImage: false };
   } catch (error) {
-    console.error(`HEIC conversion failed for ${heicPath}:`, error.message);
+    console.error('heic-convert fallback failed:', error.message);
     return null;
   }
 }
@@ -256,70 +231,59 @@ async function generateThumbnail(filename) {
   }
 
   const ext = path.extname(filename).toLowerCase();
-  let inputPath = sourcePath;
-  let tempFile = null;
 
   try {
-    // Read file and detect actual format
-    const inputBuffer = await fsp.readFile(sourcePath);
-    const actualFormat = detectImageFormat(inputBuffer);
+    // For HEIC files, we'll try Sharp directly as it's much faster
+    // We only use detectImageFormat for suspicious files or to skip videos
     
-    // Skip files with unknown/unsupported formats or videos
-    if (!actualFormat || actualFormat === 'video') {
-      if (!actualFormat) {
-        console.warn(`Skipping ${filename}: Unknown image format`);
-      }
+    // Check if it's a video by extension first to avoid unnecessary reads
+    if (VIDEO_EXTENSIONS.includes(ext)) {
       return null;
     }
 
-    // For HEIC files, convert to JPEG first using heic-convert
-    if (ext === '.heic' || actualFormat === 'heic') {
-      const conversionResult = await convertHeicToJpeg(sourcePath, filename);
-      if (!conversionResult) {
-        return null;
-      }
-      inputPath = conversionResult.path;
-      if (conversionResult.needsCleanup) {
-        tempFile = conversionResult.path;
+    // Generate thumbnail with sharp directly from sourcePath
+    // This is more memory efficient and faster than reading to buffer first
+    try {
+      await sharp(sourcePath, { failOnError: false })
+        .rotate() // Auto-rotate based on EXIF
+        .resize(THUMBNAIL_WIDTH, null, {
+          withoutEnlargement: true,
+          fit: 'inside'
+        })
+        .webp({ quality: THUMBNAIL_QUALITY })
+        .toFile(thumbnailPath);
+    } catch (sharpError) {
+      // Fallback for HEIC files if Sharp fails
+      if (ext === '.heic' || sharpError.message.includes('heif')) {
+        console.log(`Sharp failed for ${filename}, attempting heic-convert fallback...`);
+        const buffer = await fsp.readFile(sourcePath);
+        const jpegBuffer = await convertHeicBufferToJpeg(buffer);
+        if (jpegBuffer) {
+          await sharp(jpegBuffer)
+            .resize(THUMBNAIL_WIDTH, null, {
+              withoutEnlargement: true,
+              fit: 'inside'
+            })
+            .webp({ quality: THUMBNAIL_QUALITY })
+            .toFile(thumbnailPath);
+        } else {
+          throw sharpError; // Re-throw if fallback also fails
+        }
+      } else {
+        throw sharpError;
       }
     }
-
-    // Generate thumbnail with sharp
-    // Use buffer if we already have it (for non-HEIC) to avoid re-reading
-    const sharpInput = inputPath === sourcePath ? inputBuffer : inputPath;
-    
-    await sharp(sharpInput)
-      .resize(THUMBNAIL_WIDTH, null, {
-        withoutEnlargement: true,
-        fit: 'inside'
-      })
-      .webp({ quality: THUMBNAIL_QUALITY })
-      .toFile(thumbnailPath);
 
     // Invalidate status cache so next request gets fresh count
     thumbnailStatusCache = null;
     
     return thumbnailPath;
   } catch (error) {
-    // Don't spam logs for known problematic files
+    // If sharp failed, it might be an unsupported format or corrupted
     if (!error.message.includes('unsupported image format')) {
       console.error(`Failed to generate thumbnail for ${filename}:`, error.message);
     }
     return null;
-  } finally {
-    // Clean up temp file if created
-    if (tempFile) {
-      try {
-        await fsp.access(tempFile, fs.constants.F_OK); // Check if file exists
-        try {
-          await fsp.unlink(tempFile);
-        } catch (e) {
-          // Ignore cleanup errors
-        }
-      } catch (e) {
-        // tempFile does not exist
-      }
-    }
   }
 }
 
@@ -525,51 +489,29 @@ app.get('/images/:filename', async (req, res) => {
   // Serve original file, but convert HEIC if displaying full image
   if (ext === '.heic') {
     // If browser requesting image, it likely can't show HEIC
-    // We convert it on the fly to JPEG
+    // We convert it on the fly to JPEG using sharp
     try {
-      const inputBuffer = await fsp.readFile(filePath);
-      const actualFormat = detectImageFormat(inputBuffer);
-      
-      // If it's already JPEG/PNG/etc (mislabeled .heic file), serve with Sharp conversion
-      if (actualFormat && actualFormat !== 'heic') {
-        console.log(`Full image ${filename} has .heic extension but is actually ${actualFormat}`);
-        const outputBuffer = await sharp(inputBuffer)
-          .jpeg({ quality: 90 })
-          .toBuffer();
-        res.set('Content-Type', 'image/jpeg');
-        res.set('Cache-Control', 'public, max-age=86400');
-        return res.send(outputBuffer);
-      }
-      
-      // Unknown format - try Sharp first (it supports many formats)
-      if (!actualFormat) {
-        console.log(`Full image ${filename} has unknown format, trying Sharp...`);
-        try {
-          const outputBuffer = await sharp(inputBuffer)
-            .jpeg({ quality: 90 })
-            .toBuffer();
+      const outputBuffer = await sharp(filePath, { failOnError: false })
+        .rotate()
+        .jpeg({ quality: 90 })
+        .toBuffer();
+      res.set('Content-Type', 'image/jpeg');
+      res.set('Cache-Control', 'public, max-age=86400');
+      return res.send(outputBuffer);
+    } catch (e) {
+      console.log(`Sharp failed for full image ${filename}, attempting heic-convert fallback...`);
+      try {
+        const buffer = await fsp.readFile(filePath);
+        const jpegBuffer = await convertHeicBufferToJpeg(buffer);
+        if (jpegBuffer) {
           res.set('Content-Type', 'image/jpeg');
           res.set('Cache-Control', 'public, max-age=86400');
-          return res.send(outputBuffer);
-        } catch (sharpErr) {
-          console.warn(`Sharp failed for ${filename}, trying heic-convert...`);
-          // Fall through to heic-convert as last resort
+          return res.send(jpegBuffer);
         }
+      } catch (fallbackErr) {
+        console.error(`Fallback failed for ${filename}:`, fallbackErr.message);
       }
-      
-      // Actual HEIC file - convert with heic-convert
-      if (actualFormat === 'heic') {
-        const outputBuffer = await heicConvert({
-          buffer: inputBuffer,
-          format: 'JPEG',
-          quality: 0.9
-        });
-        res.set('Content-Type', 'image/jpeg');
-        res.set('Cache-Control', 'public, max-age=86400');
-        return res.send(outputBuffer);
-      }
-    } catch (e) {
-      console.error(`Failed to convert full HEIC ${filename}:`, e);
+      console.error(`Failed to convert full HEIC ${filename}:`, e.message);
       // Fallback to sending original
     }
   }
@@ -660,19 +602,26 @@ async function processPriorityQueue() {
   
   processingPriority = true;
   
-  while (priorityQueue.length > 0) {
+  const processNext = async () => {
+    if (priorityQueue.length === 0) return;
+    
     const filename = priorityQueue.shift();
     
-    // Skip if already generated (might have been done by background worker)
-    if (await thumbnailExists(filename)) {
-      continue;
+    // Skip if already generated
+    if (!(await thumbnailExists(filename))) {
+      await generateThumbnail(filename);
     }
     
-    await generateThumbnail(filename);
+    // Continue until queue is empty
+    await processNext();
+  };
+
+  // Start concurrent workers
+  const workers = Array(Math.min(THUMBNAIL_CONCURRENCY, priorityQueue.length))
+    .fill(null)
+    .map(() => processNext());
     
-    // Yield to allow new priority requests to come in
-    await new Promise(resolve => setImmediate(resolve));
-  }
+  await Promise.all(workers);
   
   processingPriority = false;
 }
@@ -743,10 +692,15 @@ async function startBackgroundThumbnailGeneration() {
   try {
     const photos = await scanImages();
     const imagePhotos = photos.filter(p => p.hasMediaFile && p.isImage);
-    const needsThumbnail = await Promise.all(imagePhotos.map(async p => {
-      const exists = await thumbnailExists(p.filename);
-      return exists ? null : p;
-    })).then(results => results.filter(Boolean));
+    
+    // Use the optimized set-based check for initial filter
+    const thumbFiles = await fsp.readdir(THUMBNAILS_DIR).catch(() => []);
+    const thumbSet = new Set(thumbFiles);
+    
+    const needsThumbnail = imagePhotos.filter(p => {
+      const thumbPath = getThumbnailPath(p.filename);
+      return !thumbSet.has(path.basename(thumbPath));
+    });
 
     if (needsThumbnail.length === 0) {
       console.log('✅ All thumbnails already generated');
@@ -754,40 +708,45 @@ async function startBackgroundThumbnailGeneration() {
       return;
     }
 
-    console.log(`🖼️  Background: Generating ${needsThumbnail.length} thumbnails...`);
+    console.log(`🖼️  Background: Generating ${needsThumbnail.length} thumbnails using ${THUMBNAIL_CONCURRENCY} workers...`);
 
     let generated = 0;
     let failed = 0;
+    let index = 0;
 
-    for (const photo of needsThumbnail) {
-      // Check if priority queue has items - pause background work
-      if (priorityQueue.length > 0) {
-        console.log(`⏸️  Pausing background generation for ${priorityQueue.length} priority items...`);
-        await processPriorityQueue();
-        console.log(`▶️  Resuming background generation...`);
-      }
-      
-      // Skip if already generated (might have been done by priority processing)
-      if (await thumbnailExists(photo.filename)) {
-        continue;
-      }
-      
-      const result = await generateThumbnail(photo.filename);
+    const processNext = async () => {
+      while (index < needsThumbnail.length) {
+        // Pause background work if priority queue has items
+        if (priorityQueue.length > 0) {
+          await processPriorityQueue();
+        }
 
-      if (result) {
-        generated++;
-      } else {
-        failed++;
-      }
+        const photo = needsThumbnail[index++];
+        if (!photo) break;
 
-      // Log progress every 10 thumbnails
-      if ((generated + failed) % 10 === 0) {
-        console.log(`   Progress: ${generated + failed}/${needsThumbnail.length} (${generated} success, ${failed} failed)`);
-      }
+        // Skip if already generated (might have been done by priority processing)
+        if (await thumbnailExists(photo.filename)) {
+          continue;
+        }
+        
+        const result = await generateThumbnail(photo.filename);
 
-      // Yield to event loop to allow HTTP requests to be processed
-      await new Promise(resolve => setImmediate(resolve));
-    }
+        if (result) {
+          generated++;
+        } else {
+          failed++;
+        }
+
+        // Log progress every 20 thumbnails
+        if ((generated + failed) % 20 === 0) {
+          console.log(`   Progress: ${generated + failed}/${needsThumbnail.length} (${generated} success, ${failed} failed)`);
+        }
+      }
+    };
+
+    // Start concurrent workers
+    const workers = Array(THUMBNAIL_CONCURRENCY).fill(null).map(() => processNext());
+    await Promise.all(workers);
 
     console.log(`✅ Background generation complete: ${generated} generated, ${failed} failed`);
   } catch (error) {
