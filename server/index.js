@@ -241,10 +241,13 @@ async function generateThumbnail(filename) {
       return null;
     }
 
-    // Generate thumbnail with sharp directly from sourcePath
-    // This is more memory efficient and faster than reading to buffer first
+    // Read file into buffer first to avoid "bad seek" errors on external drives
+    // and to prepare for potential heic-convert fallback
+    const buffer = await fsp.readFile(sourcePath);
+
+    // Generate thumbnail with sharp
     try {
-      await sharp(sourcePath, { failOnError: false })
+      await sharp(buffer, { failOnError: false })
         .rotate() // Auto-rotate based on EXIF
         .resize(THUMBNAIL_WIDTH, null, {
           withoutEnlargement: true,
@@ -254,9 +257,8 @@ async function generateThumbnail(filename) {
         .toFile(thumbnailPath);
     } catch (sharpError) {
       // Fallback for HEIC files if Sharp fails
-      if (ext === '.heic' || sharpError.message.includes('heif')) {
-        console.log(`Sharp failed for ${filename}, attempting heic-convert fallback...`);
-        const buffer = await fsp.readFile(sourcePath);
+      if (ext === '.heic' || sharpError.message.includes('heif') || sharpError.message.includes('seek')) {
+        console.log(`Sharp failed for ${filename} (${sharpError.message}), attempting heic-convert fallback...`);
         const jpegBuffer = await convertHeicBufferToJpeg(buffer);
         if (jpegBuffer) {
           await sharp(jpegBuffer)

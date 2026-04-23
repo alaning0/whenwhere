@@ -628,11 +628,6 @@
   animation: shimmer 1.5s infinite;
 }
 
-.cluster-popup-item img.loaded + .cluster-thumb-skeleton,
-.cluster-popup-item img.loaded ~ .cluster-thumb-skeleton {
-  display: none;
-}
-
 .cluster-thumb-placeholder {
   width: 100%;
   height: 100%;

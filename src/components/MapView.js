@@ -61,6 +61,7 @@ const ClusteredMarker = memo(function ClusteredMarker({ photo, onSelect }) {
     <Marker
       position={[photo.lat, photo.lng]}
       icon={icon}
+      alt={photo.id}
       eventHandlers={{ click: handleClick }}
     />
   );
@@ -81,6 +82,7 @@ const SelectedMarker = memo(function SelectedMarker({ photo, onSelect }) {
     <Marker
       position={[photo.lat, photo.lng]}
       icon={icon}
+      alt={photo.id}
       eventHandlers={{ click: handleClick }}
       zIndexOffset={1000}
     >
@@ -310,6 +312,51 @@ const createClusterCustomIcon = (cluster) => {
   });
 };
 
+// Individual item in the cluster popup with its own loading state
+const ClusterPopupItem = memo(function ClusterPopupItem({ photo, onClick }) {
+  const [isLoaded, setIsLoaded] = useState(false);
+  
+  return (
+    <div 
+      className={`cluster-popup-item ${photo.isVideo ? 'is-video' : ''}`}
+      onClick={() => onClick(photo)}
+      title={`${photo.title} - ${photo.dateFormatted}`}
+    >
+      {photo.hasMediaFile && photo.thumbnail && !photo.isVideo ? (
+        <>
+          <img 
+            src={photo.thumbnail} 
+            alt={photo.title} 
+            loading="lazy"
+            className={isLoaded ? 'loaded' : ''}
+            onLoad={() => setIsLoaded(true)}
+          />
+          {!isLoaded && <div className="cluster-thumb-skeleton"></div>}
+        </>
+      ) : (
+        <div className="cluster-thumb-placeholder">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+            {photo.isVideo ? 
+              <polygon points="5 3 19 12 5 21 5 3"></polygon> :
+              <><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle></>
+            }
+          </svg>
+        </div>
+      )}
+      {photo.isVideo && (
+        <div className="cluster-video-badge">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+            <polygon points="5 3 19 12 5 21 5 3"></polygon>
+          </svg>
+        </div>
+      )}
+      <div className="cluster-item-info">
+        <span className="cluster-item-date">{photo.dateShort}</span>
+      </div>
+    </div>
+  );
+});
+
 // Cluster popup grid component
 const ClusterPopup = memo(function ClusterPopup({ photos, onPhotoSelect, onClose }) {
   if (!photos || photos.length === 0) return null;
@@ -348,43 +395,11 @@ const ClusterPopup = memo(function ClusterPopup({ photos, onPhotoSelect, onClose
         </div>
         <div className="cluster-popup-grid">
           {photos.map((photo) => (
-            <div 
+            <ClusterPopupItem 
               key={photo.id} 
-              className={`cluster-popup-item ${photo.isVideo ? 'is-video' : ''}`}
-              onClick={() => handlePhotoClick(photo)}
-              title={`${photo.title} - ${photo.dateFormatted}`}
-            >
-              {photo.hasMediaFile && photo.thumbnail && !photo.isVideo ? (
-                <>
-                  <div className="cluster-thumb-skeleton"></div>
-                  <img 
-                    src={photo.thumbnail} 
-                    alt={photo.title} 
-                    loading="lazy"
-                    onLoad={(e) => e.target.classList.add('loaded')}
-                  />
-                </>
-              ) : (
-                <div className="cluster-thumb-placeholder">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                    {photo.isVideo ? 
-                      <polygon points="5 3 19 12 5 21 5 3"></polygon> :
-                      <><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle></>
-                    }
-                  </svg>
-                </div>
-              )}
-              {photo.isVideo && (
-                <div className="cluster-video-badge">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-                    <polygon points="5 3 19 12 5 21 5 3"></polygon>
-                  </svg>
-                </div>
-              )}
-              <div className="cluster-item-info">
-                <span className="cluster-item-date">{photo.dateShort}</span>
-              </div>
-            </div>
+              photo={photo} 
+              onClick={handlePhotoClick} 
+            />
           ))}
         </div>
       </div>
@@ -435,22 +450,17 @@ function MapView({ photos, selectedPhoto, onPhotoSelect, pinMode, onOpenLightbox
     // Get all markers in this cluster
     const markers = cluster.layer.getAllChildMarkers();
     
-    // Extract photo data from markers
-    // Each marker has the photo stored via its position - we match by lat/lng
+    // Extract photo data from markers using the stored ID in alt option
     const clusterPhotoList = markers.map(marker => {
-      const latlng = marker.getLatLng();
-      // Find photo matching this position
-      return photosWithLocation.find(p => 
-        Math.abs(p.lat - latlng.lat) < 0.0001 && 
-        Math.abs(p.lng - latlng.lng) < 0.0001
-      );
+      const id = marker.options.alt;
+      return photoMap.get(id);
     }).filter(Boolean);
     
     // Sort by date
     clusterPhotoList.sort((a, b) => new Date(a.date) - new Date(b.date));
     
     setClusterPhotos(clusterPhotoList);
-  }, [photosWithLocation]);
+  }, [photoMap]);
   
   const handleCloseClusterPopup = useCallback(() => {
     setClusterPhotos(null);
