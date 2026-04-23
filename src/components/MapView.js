@@ -451,10 +451,20 @@ function MapView({ photos, selectedPhoto, onPhotoSelect, pinMode, onOpenLightbox
     const markers = cluster.layer.getAllChildMarkers();
     
     // Extract photo data from markers using the stored ID in alt option
-    const clusterPhotoList = markers.map(marker => {
+    // Use a Set to ensure we only include each photo once
+    const seenIds = new Set();
+    const clusterPhotoList = [];
+    
+    markers.forEach(marker => {
       const id = marker.options.alt;
-      return photoMap.get(id);
-    }).filter(Boolean);
+      if (id && !seenIds.has(id)) {
+        const photo = photoMap.get(id);
+        if (photo) {
+          seenIds.add(id);
+          clusterPhotoList.push(photo);
+        }
+      }
+    });
     
     // Sort by date
     clusterPhotoList.sort((a, b) => new Date(a.date) - new Date(b.date));
