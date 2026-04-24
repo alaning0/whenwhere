@@ -106,19 +106,33 @@ function App() {
     setSseReady(true);
   }, []);
 
+  // Debounced priority thumbnail request
+  const requestPriorityThumbnails = useMemo(
+    () => {
+      let timeoutId;
+      return (filename) => {
+        if (timeoutId) clearTimeout(timeoutId);
+        timeoutId = setTimeout(() => {
+          fetch(`${API_URL}/api/thumbnails/priority`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filenames: [filename], highPriority: true }),
+          }).catch(err => console.error('Failed to prioritize thumbnail:', err));
+        }, 150); // 150ms debounce
+      };
+    },
+    []
+  );
+
   // Stable callbacks
   const handlePhotoSelect = useCallback((photo) => {
     setSelectedPhoto(photo);
     
-    // Prioritize loading this photo's thumbnail above everything else
+    // Prioritize loading this photo's thumbnail with debounce
     if (photo && photo.hasMediaFile && photo.isImage) {
-      fetch(`${API_URL}/api/thumbnails/priority`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filenames: [photo.filename], highPriority: true }),
-      }).catch(err => console.error('Failed to prioritize thumbnail:', err));
+      requestPriorityThumbnails(photo.filename);
     }
-  }, []);
+  }, [requestPriorityThumbnails]);
 
   const handlePinModeChange = useCallback((mode) => {
     setPinMode(mode);

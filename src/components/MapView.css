@@ -19,7 +19,7 @@
   border-radius: 8px;
   border: 1px solid var(--border-color);
   box-shadow: var(--shadow-lg);
-  backdrop-filter: blur(10px);
+  /* Backdrop filter removed for performance during drag */
 }
 
 .layer-btn {
@@ -35,7 +35,7 @@
   font-size: 11px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background 0.2s ease, color 0.2s ease;
 }
 
 .layer-btn:hover {
@@ -84,8 +84,9 @@
   align-items: center;
   justify-content: center;
   box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3);
-  transition: all 0.3s ease;
+  transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
   cursor: pointer;
+  will-change: transform; /* Hardware acceleration */
 }
 
 .marker-pin svg {
@@ -181,8 +182,9 @@
   bottom: 100px;
   left: 20px;
   z-index: 1000;
-  animation: slideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: slideIn 0.3s ease-out;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease;
+  will-change: transform, opacity;
 }
 
 .selected-photo-overlay.expanded {
@@ -222,8 +224,8 @@
   overflow: hidden;
   box-shadow: var(--shadow-lg);
   max-width: 300px;
-  backdrop-filter: blur(10px);
-  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  /* Removed backdrop-filter */
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .overlay-image-container.expanded {
@@ -292,8 +294,7 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: all 0.2s ease;
-  backdrop-filter: blur(10px);
+  transition: transform 0.2s ease, background 0.2s ease;
 }
 
 .expand-btn.fullscreen {
@@ -413,28 +414,17 @@
   font-family: 'IBM Plex Mono', monospace;
   font-weight: 700;
   color: white;
-  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3), 
-              0 0 0 4px rgba(88, 166, 255, 0.3);
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
   cursor: pointer;
-  transition: all 0.2s ease;
-  animation: clusterPulse 2s ease-in-out infinite;
+  transition: transform 0.2s ease;
+  will-change: transform; /* Hardware acceleration */
 }
+
+/* Removed continuous pulse animation for performance */
 
 .cluster-marker:hover {
-  transform: scale(1.15);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4), 
-              0 0 0 6px rgba(88, 166, 255, 0.4);
-}
-
-@keyframes clusterPulse {
-  0%, 100% {
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3), 
-                0 0 0 4px rgba(88, 166, 255, 0.3);
-  }
-  50% {
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3), 
-                0 0 0 8px rgba(88, 166, 255, 0.15);
-  }
+  transform: scale(1.1);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
 }
 
 .cluster-small {
@@ -461,7 +451,7 @@
 /* Cluster spiderfy lines */
 .leaflet-cluster-anim .leaflet-marker-icon, 
 .leaflet-cluster-anim .leaflet-marker-shadow {
-  transition: transform 0.3s ease-out, opacity 0.3s ease-in;
+  transition: transform 0.2s ease-out, opacity 0.2s ease-in;
 }
 
 /* Override default cluster styles */
@@ -484,14 +474,13 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.75);
+  background: rgba(0, 0, 0, 0.7);
   z-index: 2000;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 20px;
-  animation: fadeIn 0.2s ease;
-  backdrop-filter: blur(4px);
+  animation: fadeIn 0.15s ease-out;
 }
 
 @keyframes fadeIn {
@@ -509,14 +498,14 @@
   display: flex;
   flex-direction: column;
   box-shadow: 0 25px 80px rgba(0, 0, 0, 0.5);
-  animation: scaleIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: scaleIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   overflow: hidden;
 }
 
 @keyframes scaleIn {
   from {
     opacity: 0;
-    transform: scale(0.9);
+    transform: scale(0.95);
   }
   to {
     opacity: 1;
@@ -585,19 +574,13 @@
   cursor: pointer;
   background: var(--bg-tertiary);
   border: 2px solid transparent;
-  transition: all 0.2s ease;
+  transition: transform 0.2s ease, border-color 0.2s ease;
 }
 
 .cluster-popup-item:hover {
   border-color: var(--accent-primary);
   transform: scale(1.05);
-  box-shadow: 0 8px 25px rgba(88, 166, 255, 0.3);
   z-index: 1;
-}
-
-.cluster-popup-item.is-video:hover {
-  border-color: var(--accent-tertiary);
-  box-shadow: 0 8px 25px rgba(126, 231, 135, 0.3);
 }
 
 .cluster-popup-item img {
@@ -605,7 +588,7 @@
   height: 100%;
   object-fit: cover;
   opacity: 0;
-  transition: opacity 0.3s ease;
+  transition: opacity 0.2s ease;
 }
 
 .cluster-popup-item img.loaded {
@@ -618,14 +601,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: linear-gradient(
-    110deg,
-    var(--bg-tertiary) 30%,
-    var(--bg-secondary) 50%,
-    var(--bg-tertiary) 70%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 1.5s infinite;
+  background: var(--bg-tertiary);
 }
 
 .cluster-thumb-placeholder {

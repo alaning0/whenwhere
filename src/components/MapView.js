@@ -125,61 +125,45 @@ function MapViewController({ selectedPhoto, photos, isPreviewExpanded }) {
   
   useEffect(() => {
     // Guard: ensure map is ready before performing operations
-    if (!map || !map.getContainer()) {
-      return;
-    }
+    if (!map) return;
     
-    // Small delay to ensure map is fully initialized
-    const timeoutId = setTimeout(() => {
-      try {
-        if (selectedPhoto && selectedPhoto.hasLocation) {
-          const currentZoom = map.getZoom();
-          const targetZoom = hasInitialized.current ? currentZoom : 14;
-          
-          // Calculate target position
-          let targetLat = selectedPhoto.lat;
-          let targetLng = selectedPhoto.lng;
-          
-          // When preview is expanded, offset the center so the marker appears
-          // in the center of the visible (right) half of the map
-          if (isPreviewExpanded) {
-            const mapSize = map.getSize();
-            if (mapSize && mapSize.x > 0) {
-              const offsetX = mapSize.x / 4; // Offset by 1/4 of map width to center in right half
-              
-              // Convert the photo location to pixel coordinates
-              const photoPoint = map.project([selectedPhoto.lat, selectedPhoto.lng], targetZoom);
-              
-              // Offset the point to the left so it appears on the right
-              const offsetPoint = L.point(photoPoint.x - offsetX, photoPoint.y);
-              
-              // Convert back to lat/lng - this becomes our new center
-              const offsetLatLng = map.unproject(offsetPoint, targetZoom);
-              targetLat = offsetLatLng.lat;
-              targetLng = offsetLatLng.lng;
-            }
-          }
-          
-          map.flyTo([targetLat, targetLng], targetZoom, {
-            duration: 0.6,
-            easeLinearity: 0.5
-          });
-          
-          hasInitialized.current = true;
-        } else if (photos.length > 0 && !hasInitialized.current) {
-          const photosWithLocation = photos.filter(p => p.hasLocation);
-          if (photosWithLocation.length > 0) {
-            const bounds = L.latLngBounds(photosWithLocation.map(p => [p.lat, p.lng]));
-            map.fitBounds(bounds, { padding: [50, 50] });
-            hasInitialized.current = true;
-          }
+    if (selectedPhoto && selectedPhoto.hasLocation) {
+      const currentZoom = map.getZoom();
+      const targetZoom = hasInitialized.current ? currentZoom : 14;
+      
+      // Calculate target position
+      let targetLat = selectedPhoto.lat;
+      let targetLng = selectedPhoto.lng;
+      
+      // When preview is expanded, offset the center so the marker appears
+      // in the center of the visible (right) half of the map
+      if (isPreviewExpanded) {
+        const mapSize = map.getSize();
+        if (mapSize && mapSize.x > 0) {
+          const offsetX = mapSize.x / 4; 
+          const photoPoint = map.project([selectedPhoto.lat, selectedPhoto.lng], targetZoom);
+          const offsetPoint = L.point(photoPoint.x - offsetX, photoPoint.y);
+          const offsetLatLng = map.unproject(offsetPoint, targetZoom);
+          targetLat = offsetLatLng.lat;
+          targetLng = offsetLatLng.lng;
         }
-      } catch (err) {
-        console.warn('MapViewController: Map operation failed, will retry', err.message);
       }
-    }, 100);
-    
-    return () => clearTimeout(timeoutId);
+      
+      // Snappier movement
+      map.setView([targetLat, targetLng], targetZoom, {
+        animate: true,
+        duration: 0.3
+      });
+      
+      hasInitialized.current = true;
+    } else if (photos.length > 0 && !hasInitialized.current) {
+      const photosWithLocation = photos.filter(p => p.hasLocation);
+      if (photosWithLocation.length > 0) {
+        const bounds = L.latLngBounds(photosWithLocation.map(p => [p.lat, p.lng]));
+        map.fitBounds(bounds, { padding: [50, 50] });
+        hasInitialized.current = true;
+      }
+    }
   }, [selectedPhoto, photos, map, isPreviewExpanded]);
   
   return null;
