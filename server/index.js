@@ -66,7 +66,8 @@ const execAsync = promisify(exec);
 
 const app = express();
 
-app.use(cors());
+// The server binds to loopback only; CORS is needed solely for the CRA dev server origin.
+app.use(cors({ origin: ['http://localhost:3000', 'http://127.0.0.1:3000'] }));
 app.use(express.json());
 
 // Thumbnail settings
@@ -799,7 +800,9 @@ export async function startServer(options = {}) {
   const port = options.port || getPort();
 
   return new Promise((resolve, reject) => {
-    serverInstance = app.listen(port, async () => {
+    // Loopback only: this server exposes the photo library and an unauthenticated
+    // config API, so it must never be reachable from the network.
+    serverInstance = app.listen(port, '127.0.0.1', async () => {
       const config = getConfig();
 
       if (config.thumbnailsDir) {
