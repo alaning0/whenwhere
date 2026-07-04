@@ -1,3 +1,29 @@
+/* Self-hosted fonts (latin subset) — the packaged desktop app must work
+   offline, so nothing is fetched from Google Fonts at runtime */
+@font-face {
+  font-family: 'Instrument Sans';
+  font-style: normal;
+  font-weight: 400 700; /* variable font */
+  font-display: swap;
+  src: url('./fonts/instrument-sans-variable-latin.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./fonts/ibm-plex-mono-400-latin.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('./fonts/ibm-plex-mono-500-latin.woff2') format('woff2');
+}
+
 * {
   margin: 0;
   padding: 0;
