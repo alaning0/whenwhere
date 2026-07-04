@@ -69,14 +69,17 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null) {
     const isVideo = VIDEO_EXTENSIONS.includes(ext);
     const isImage = IMAGE_EXTENSIONS.includes(ext);
 
-    // Use XMP date or file date as fallback
-    let photoDate;
+    // Use XMP date when valid; fall back to the file date. An unparseable XMP
+    // date must not throw — one bad sidecar used to kill the whole scan.
+    let photoDate = null;
     if (xmpData.date) {
-      photoDate = new Date(xmpData.date).toISOString();
-    } else if (mediaPath) {
-      photoDate = getFileDate(mediaPath).toISOString();
-    } else {
-      photoDate = getFileDate(xmpPath).toISOString();
+      const parsed = new Date(xmpData.date);
+      if (!isNaN(parsed.getTime())) {
+        photoDate = parsed.toISOString();
+      }
+    }
+    if (!photoDate) {
+      photoDate = getFileDate(mediaPath || xmpPath).toISOString();
     }
 
     const dateObj = new Date(photoDate);

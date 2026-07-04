@@ -5,8 +5,6 @@ import fsp from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import sharp from 'sharp';
 import heicConvert from 'heic-convert';
 import {
@@ -62,13 +60,19 @@ function isResolvedPathInsideDir(filePath, rootDir) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-const execAsync = promisify(exec);
-
 const app = express();
 
 // The server binds to loopback only; CORS is needed solely for the CRA dev server origin.
 app.use(cors({ origin: ['http://localhost:3000', 'http://127.0.0.1:3000'] }));
 app.use(express.json());
+
+/**
+ * Express 4 does not catch rejections from async handlers — an uncaught throw
+ * would crash the process on Node >= 15. Route errors become 500s instead.
+ */
+const asyncHandler = (fn) => (req, res, next) => {
+  Promise.resolve(fn(req, res, next)).catch(next);
+};
 
 // Thumbnail settings
 const THUMBNAIL_WIDTH = 300;
@@ -331,7 +335,7 @@ app.get('/api/config', (req, res) => {
   });
 });
 
-app.put('/api/config', async (req, res) => {
+app.put('/api/config', asyncHandler(async (req, res) => {
   try {
     const { adapter, imagesDir, thumbnailsDir } = req.body || {};
     const previousAdapter = getAdapterName();
@@ -352,7 +356,7 @@ app.put('/api/config', async (req, res) => {
     console.error('Config update failed:', error.message);
     res.status(400).json({ error: error.message });
   }
-});
+}));
 
 app.get('/api/adapter', (req, res) => {
   if (!metadataAdapter) {
@@ -377,7 +381,7 @@ app.get('/api/scan/progress', (req, res) => {
   });
 });
 
-app.get('/api/photos', async (req, res) => {
+app.get('/api/photos', asyncHandler(async (req, res) => {
   try {
     if (!isConfigured()) {
       return res.json({
@@ -417,9 +421,9 @@ app.get('/api/photos', async (req, res) => {
     console.error('Error fetching photos:', error);
     res.status(500).json({ error: 'Failed to fetch photos' });
   }
-});
+}));
 
-app.get('/api/photos/:id', async (req, res) => {
+app.get('/api/photos/:id', asyncHandler(async (req, res) => {
   try {
     if (!isConfigured()) {
       return res.status(404).json({ error: 'Photo not found' });
@@ -437,14 +441,16 @@ app.get('/api/photos/:id', async (req, res) => {
     console.error('Error fetching photo:', error);
     res.status(500).json({ error: 'Failed to fetch photo' });
   }
-});
+}));
 
-app.get('/images/:filename', async (req, res) => {
+app.get('/images/:filename', asyncHandler(async (req, res) => {
   if (!isConfigured()) {
     return res.status(503).json({ error: 'Not configured' });
   }
 
-  const filename = decodeURIComponent(req.params.filename);
+  // Express has already percent-decoded the param; decoding again corrupts
+  // names with literal "%" and can throw on sequences like "50%.jpg".
+  const filename = req.params.filename;
   const imagesDir = getImagesDir();
   let filePath;
   if (filename.includes('/') || filename.includes('\\')) {
@@ -532,9 +538,9 @@ app.get('/images/:filename', async (req, res) => {
 
   res.set('Cache-Control', 'public, max-age=86400');
   res.sendFile(filePath);
-});
+}));
 
-app.post('/api/refresh', async (req, res) => {
+app.post('/api/refresh', asyncHandler(async (req, res) => {
   if (!isConfigured()) {
     return res.json({ message: 'Not configured', count: 0 });
   }
@@ -542,7 +548,7 @@ app.post('/api/refresh', async (req, res) => {
   cacheTimestamp = null;
   const photos = await scanImages();
   res.json({ message: 'Cache refreshed', count: photos.length });
-});
+}));
 
 app.get('/api/health', (req, res) => {
   res.json({
@@ -552,12 +558,12 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-app.post('/api/thumbnails/priority', async (req, res) => {
+app.post('/api/thumbnails/priority', asyncHandler(async (req, res) => {
   if (!isConfigured()) {
     return res.json({ queued: 0 });
   }
 
-  const { filenames, highPriority } = req.body;
+  const { filenames, highPriority } = req.body || {};
 
   if (!Array.isArray(filenames) || filenames.length === 0) {
     return res.json({ queued: 0 });
@@ -584,7 +590,7 @@ app.post('/api/thumbnails/priority', async (req, res) => {
   }
 
   res.json({ queued: needsGeneration.length, highPriority: !!highPriority });
-});
+}));
 
 async function processPriorityQueue() {
   if (processingPriority || priorityQueue.length === 0) {
@@ -614,7 +620,7 @@ async function processPriorityQueue() {
   processingPriority = false;
 }
 
-app.get('/api/thumbnails/status', async (req, res) => {
+app.get('/api/thumbnails/status', asyncHandler(async (req, res) => {
   if (!isConfigured()) {
     return res.json({
       imagesDirectory: '',
@@ -673,7 +679,7 @@ app.get('/api/thumbnails/status', async (req, res) => {
   thumbnailStatusCacheTime = now;
 
   res.json(thumbnailStatusCache);
-});
+}));
 
 async function startBackgroundThumbnailGeneration() {
   if (!isConfigured()) {

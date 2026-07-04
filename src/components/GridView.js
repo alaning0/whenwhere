@@ -18,22 +18,24 @@ const ITEM_WIDTH = 160;
 const ITEM_HEIGHT = 180;
 const GAP = 12;
 
-// Memoized grid cell renderer
+// Memoized grid cell renderer.
+// No hooks in here: cells flip between empty (trailing cells) and populated
+// as the grid resizes, and a conditional hook would crash the render.
 const GridCell = memo(function GridCell({ columnIndex, rowIndex, style, data }) {
   const { photos, columns, selectedId, onSelect, onOpenLightbox } = data;
   const index = rowIndex * columns + columnIndex;
-  
+
   if (index >= photos.length) {
     return null;
   }
-  
+
   const photo = photos[index];
   const isSelected = photo.id === selectedId;
-  
-  const handleClick = useCallback(() => {
+
+  const handleClick = () => {
     onSelect(photo);
     onOpenLightbox();
-  }, [photo, onSelect, onOpenLightbox]);
+  };
   
   return (
     <div style={{
