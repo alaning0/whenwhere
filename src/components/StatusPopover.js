@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { API_URL } from '../config';
 import './StatusPopover.css';
-
-const API_URL = 'http://localhost:3002';
 
 function StatusPopover() {
   const [isOpen, setIsOpen] = useState(false);

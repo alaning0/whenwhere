@@ -2,6 +2,9 @@
   "name": "whenwhere",
   "version": "1.0.0",
   "private": true,
+  "description": "Visualize photos on maps and timelines",
+  "author": "WhenWhere",
+  "main": "electron/main.js",
   "dependencies": {
     "cors": "^2.8.6",
     "date-fns": "^3.0.0",
@@ -17,7 +20,10 @@
     "sharp": "^0.34.5"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "wait-on": "^8.0.1"
   },
   "scripts": {
     "start": "concurrently --names \"server,frontend\" --prefix-colors \"blue,green\" \"npm run server\" \"npm run frontend\"",
@@ -26,8 +32,64 @@
     "server": "cd server && npm start",
     "server:dev": "cd server && npm run dev",
     "build": "react-scripts build",
+    "electron:dev": "concurrently --kill-others --names \"frontend,electron\" --prefix-colors \"green,magenta\" \"npm run frontend\" \"wait-on http://localhost:3000 && electron .\"",
+    "prepare:node": "node scripts/prepare-node.js",
+    "dist": "npm run build && npm run prepare:node && electron-builder",
+    "dist:win": "npm run build && npm run prepare:node && electron-builder --win",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
+  },
+  "build": {
+    "extends": null,
+    "appId": "com.whenwhere.app",
+    "productName": "WhenWhere",
+    "copyright": "Copyright © WhenWhere",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "server",
+        "to": "server",
+        "filter": [
+          "**/*",
+          "!.env",
+          "!config.json"
+        ]
+      },
+      {
+        "from": "build",
+        "to": "build"
+      },
+      {
+        "from": "build-resources/node.exe",
+        "to": "node.exe"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName} Setup ${version}.${ext}",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "WhenWhere"
+    },
+    "asar": true
   },
   "browserslist": {
     "production": [

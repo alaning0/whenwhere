@@ -4,36 +4,52 @@ import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
+import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import sharp from 'sharp';
 import heicConvert from 'heic-convert';
-import config from './config.js';
+import {
+  getConfig,
+  isConfigured,
+  getImagesDir,
+  getThumbnailsDir,
+  getPort,
+  getAdapterName,
+  getValidAdapters,
+  updateConfig,
+} from './config.js';
 
-/// Load adapter based on configuration
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-// Dynamically import the configured adapter
 const adapterMap = {
-  'exif': './adapters/exifAdapter.js',
-  'xmp': './adapters/xmpAdapter.js',
+  exif: './adapters/exifAdapter.js',
+  xmp: './adapters/xmpAdapter.js',
   'google-takeout': './adapters/GooglePhotosTakeoutAdapter.js',
 };
 
-const adapterPath = adapterMap[config.adapter];
-if (!adapterPath) {
-  console.error(`Unknown adapter: ${config.adapter}`);
-  process.exit(1);
+let metadataAdapter = null;
+const loadedAdapters = {};
+
+async function loadAdapter(name) {
+  const key = adapterMap[name] ? name : 'exif';
+  if (!loadedAdapters[key]) {
+    loadedAdapters[key] = await import(adapterMap[key]);
+  }
+  metadataAdapter = loadedAdapters[key];
+  return metadataAdapter;
 }
 
-const metadataAdapter = await import(adapterPath);
+// Load initial adapter (default exif even when unconfigured)
+await loadAdapter(getAdapterName());
 
-// Use paths from centralized config
-const IMAGES_DIR = config.imagesDir;
-const THUMBNAILS_DIR = config.thumbnailsDir;
+function getImageExtensions() {
+  return metadataAdapter.IMAGE_EXTENSIONS;
+}
 
-// Ensure thumbnails directory exists
-if (!fs.existsSync(THUMBNAILS_DIR)) {
-  fs.mkdirSync(THUMBNAILS_DIR, { recursive: true });
+function getVideoExtensions() {
+  return metadataAdapter.VIDEO_EXTENSIONS;
 }
 
 /**
@@ -46,64 +62,50 @@ function isResolvedPathInsideDir(filePath, rootDir) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-///
-
 const execAsync = promisify(exec);
 
 const app = express();
-const PORT = config.port;
 
-// Enable CORS for React frontend
 app.use(cors());
+app.use(express.json());
 
 // Thumbnail settings
 const THUMBNAIL_WIDTH = 300;
 const THUMBNAIL_QUALITY = 80;
-const THUMBNAIL_CONCURRENCY = 2; // Process 2 thumbnails in parallel
-
-// Get supported extensions from adapter
-const { IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, MEDIA_EXTENSIONS } = metadataAdapter;
+const THUMBNAIL_CONCURRENCY = 2;
 
 /**
  * Detect actual image format by reading magic bytes
- * Returns: 'jpeg', 'png', 'gif', 'webp', 'heic', 'tiff', 'bmp', or null if unknown
  */
 function detectImageFormat(buffer) {
   if (buffer.length < 12) return null;
-  
-  // JPEG: starts with FF D8 FF
+
   if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
     return 'jpeg';
   }
-  
-  // PNG: starts with 89 50 4E 47 0D 0A 1A 0A
+
   if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
     return 'png';
   }
-  
-  // GIF: starts with GIF87a or GIF89a
+
   if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) {
     return 'gif';
   }
-  
-  // WebP: starts with RIFF....WEBP
+
   if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
       buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
     return 'webp';
   }
-  
-  // TIFF: starts with II (little-endian) or MM (big-endian) followed by 42
+
   if ((buffer[0] === 0x49 && buffer[1] === 0x49 && buffer[2] === 0x2A && buffer[3] === 0x00) ||
       (buffer[0] === 0x4D && buffer[1] === 0x4D && buffer[2] === 0x00 && buffer[3] === 0x2A)) {
     return 'tiff';
   }
-  
-  // BMP: starts with BM
+
   if (buffer[0] === 0x42 && buffer[1] === 0x4D) {
     return 'bmp';
   }
-  
-  // HEIC/HEIF: has "ftyp" at offset 4-7 with heic, heix, hevc, mif1, etc.
+
   if (buffer.length >= 12) {
     const ftyp = buffer.slice(4, 8).toString('ascii');
     if (ftyp === 'ftyp') {
@@ -111,68 +113,65 @@ function detectImageFormat(buffer) {
       if (['heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1'].includes(brand)) {
         return 'heic';
       }
-      // Could also be MOV/MP4 video
       if (['qt  ', 'isom', 'mp41', 'mp42', 'M4V ', 'avc1'].includes(brand)) {
         return 'video';
       }
     }
   }
-  
+
   return null;
 }
 
 // Cache for photo metadata
 let photoCache = null;
 let cacheTimestamp = null;
-const CACHE_DURATION = 60000; // 1 minute
+const CACHE_DURATION = 60000;
 
-// Track background thumbnail generation
 let backgroundGenerationInProgress = false;
 
-// Cache for thumbnail status (avoid counting 4000+ files on every request)
 let thumbnailStatusCache = null;
 let thumbnailStatusCacheTime = null;
-const THUMBNAIL_STATUS_CACHE_DURATION = 30000; // 30 seconds
+const THUMBNAIL_STATUS_CACHE_DURATION = 30000;
 
-// Priority queue for viewport-first thumbnail generation
 let priorityQueue = [];
 let processingPriority = false;
 
-/**
- * Get the thumbnail path for a given filename
- */
-function getThumbnailPath(filename) {
-  // Handle full paths - extract just the filename for thumbnail storage
-  // Use a hash of the full path to avoid collisions from same-named files in different folders
-  const basename = path.basename(filename);
-  
-  // If it's a full path, include a hash to distinguish files with same name in different folders
-  if (filename.includes('/') || filename.includes('\\')) {
-    const hash = crypto.createHash('md5').update(filename).digest('hex').substring(0, 8);
-    return path.join(THUMBNAILS_DIR, `${hash}_${basename}.webp`);
-  }
-  
-  return path.join(THUMBNAILS_DIR, `${basename}.webp`);
+function resetRuntimeState() {
+  photoCache = null;
+  cacheTimestamp = null;
+  thumbnailStatusCache = null;
+  thumbnailStatusCacheTime = null;
+  priorityQueue = [];
+  processingPriority = false;
+  backgroundGenerationInProgress = false;
+  firstScanDone = false;
+  scanProgress = { current: 0, total: 0, phase: 'idle', scanning: false };
+  notifyProgressListeners();
 }
 
-/**
- * Check if thumbnail exists for a file (and has content)
- */
+function getThumbnailPath(filename) {
+  const thumbnailsDir = getThumbnailsDir();
+  const basename = path.basename(filename);
+
+  if (filename.includes('/') || filename.includes('\\')) {
+    const hash = crypto.createHash('md5').update(filename).digest('hex').substring(0, 8);
+    return path.join(thumbnailsDir, `${hash}_${basename}.webp`);
+  }
+
+  return path.join(thumbnailsDir, `${basename}.webp`);
+}
+
 async function thumbnailExists(filename) {
   const thumbPath = getThumbnailPath(filename);
   try {
-    await fsp.access(thumbPath, fs.constants.F_OK); // Check if file exists
+    await fsp.access(thumbPath, fs.constants.F_OK);
     const stats = await fsp.stat(thumbPath);
-    return stats.size > 0; // Check file has actual content (not 0 bytes)
+    return stats.size > 0;
   } catch (e) {
     return false;
   }
 }
 
-/**
- * Fallback HEIC conversion using heic-convert library
- * Used when Sharp fails due to missing decoding plugins
- */
 async function convertHeicBufferToJpeg(buffer) {
   try {
     return await heicConvert({
@@ -186,44 +185,35 @@ async function convertHeicBufferToJpeg(buffer) {
   }
 }
 
-/**
- * Generate a thumbnail for an image file
- * Returns the thumbnail path on success, null on failure
- */
 async function generateThumbnail(filename) {
-  // Handle both relative filenames and full paths
-  const sourcePath = (filename.includes('/') || filename.includes('\\')) 
-    ? filename 
-    : path.join(IMAGES_DIR, filename);
-  if (!isResolvedPathInsideDir(sourcePath, IMAGES_DIR)) {
+  const imagesDir = getImagesDir();
+  const sourcePath = (filename.includes('/') || filename.includes('\\'))
+    ? filename
+    : path.join(imagesDir, filename);
+  if (!isResolvedPathInsideDir(sourcePath, imagesDir)) {
     console.warn(`Rejected thumbnail request outside images dir: ${filename}`);
     return null;
   }
   const thumbnailPath = getThumbnailPath(filename);
 
-  // Skip if valid thumbnail already exists
   if (await thumbnailExists(filename)) {
     return thumbnailPath;
   }
 
-  // Delete empty/corrupt thumbnail if it exists
   try {
-    await fsp.access(thumbnailPath, fs.constants.F_OK); // Check if file exists
+    await fsp.access(thumbnailPath, fs.constants.F_OK);
     try {
       await fsp.unlink(thumbnailPath);
     } catch (e) {
-      // File might be busy (being served), skip regeneration for now
       if (e.code === 'EBUSY') {
         return null;
       }
-      // For other errors, log and continue
       console.warn(`Could not delete corrupt thumbnail ${filename}:`, e.code);
     }
   } catch (e) {
-    // Thumbnail doesn't exist, no need to delete
+    // Thumbnail doesn't exist
   }
 
-  // Skip if source doesn't exist
   try {
     await fsp.access(sourcePath, fs.constants.F_OK);
   } catch (e) {
@@ -233,22 +223,15 @@ async function generateThumbnail(filename) {
   const ext = path.extname(filename).toLowerCase();
 
   try {
-    // For HEIC files, we'll try Sharp directly as it's much faster
-    // We only use detectImageFormat for suspicious files or to skip videos
-    
-    // Check if it's a video by extension first to avoid unnecessary reads
-    if (VIDEO_EXTENSIONS.includes(ext)) {
+    if (getVideoExtensions().includes(ext)) {
       return null;
     }
 
-    // Read file into buffer first to avoid "bad seek" errors on external drives
-    // and to prepare for potential heic-convert fallback
     const buffer = await fsp.readFile(sourcePath);
 
-    // Generate thumbnail with sharp
     try {
       await sharp(buffer, { failOnError: false })
-        .rotate() // Auto-rotate based on EXIF
+        .rotate()
         .resize(THUMBNAIL_WIDTH, null, {
           withoutEnlargement: true,
           fit: 'inside'
@@ -256,7 +239,6 @@ async function generateThumbnail(filename) {
         .webp({ quality: THUMBNAIL_QUALITY })
         .toFile(thumbnailPath);
     } catch (sharpError) {
-      // Fallback for HEIC files if Sharp fails
       if (ext === '.heic' || sharpError.message.includes('heif') || sharpError.message.includes('seek')) {
         console.log(`Sharp failed for ${filename} (${sharpError.message}), attempting heic-convert fallback...`);
         const jpegBuffer = await convertHeicBufferToJpeg(buffer);
@@ -269,19 +251,17 @@ async function generateThumbnail(filename) {
             .webp({ quality: THUMBNAIL_QUALITY })
             .toFile(thumbnailPath);
         } else {
-          throw sharpError; // Re-throw if fallback also fails
+          throw sharpError;
         }
       } else {
         throw sharpError;
       }
     }
 
-    // Invalidate status cache so next request gets fresh count
     thumbnailStatusCache = null;
-    
+
     return thumbnailPath;
   } catch (error) {
-    // If sharp failed, it might be an unsupported format or corrupted
     if (!error.message.includes('unsupported image format')) {
       console.error(`Failed to generate thumbnail for ${filename}:`, error.message);
     }
@@ -289,7 +269,6 @@ async function generateThumbnail(filename) {
   }
 }
 
-// Scan progress state for SSE
 let scanProgress = { current: 0, total: 0, phase: 'idle', scanning: false };
 let progressListeners = [];
 let firstScanDone = false;
@@ -300,43 +279,36 @@ function notifyProgressListeners() {
   });
 }
 
-/**
- * Scan directory for photos using the configured metadata adapter
- * The adapter handles the specifics of how to find and extract metadata
- */
 async function scanImages() {
+  if (!isConfigured()) {
+    return [];
+  }
+
   const now = Date.now();
 
-  // Return cached data if still valid
   if (photoCache && cacheTimestamp && (now - cacheTimestamp) < CACHE_DURATION) {
     return photoCache;
   }
 
-  // Mark scan as in progress
   scanProgress = { current: 0, total: 0, phase: 'starting', scanning: true };
   notifyProgressListeners();
 
-  // Use the metadata adapter to scan for photos
   const adapterInfo = metadataAdapter.getAdapterInfo();
   console.log(`Using adapter: ${adapterInfo.displayName}`);
-  
-  // Progress callback for SSE updates
+
   const onProgress = (current, total, phase) => {
     scanProgress = { current, total, phase, scanning: phase !== 'complete' };
     notifyProgressListeners();
   };
-  
-  const photos = await metadataAdapter.scanPhotos(IMAGES_DIR, PORT, onProgress);
 
-  // Cache the results
+  const photos = await metadataAdapter.scanPhotos(getImagesDir(), getPort(), onProgress);
+
   photoCache = photos;
   cacheTimestamp = now;
 
-  // Mark scan as complete
   scanProgress = { current: photos.length, total: photos.length, phase: 'complete', scanning: false };
   notifyProgressListeners();
 
-  // Start background thumbnail generation after first scan
   if (!firstScanDone) {
     firstScanDone = true;
     setTimeout(() => {
@@ -350,43 +322,75 @@ async function scanImages() {
 
 // API Routes
 
-/**
- * Get current adapter info
- */
+app.get('/api/config', (req, res) => {
+  const config = getConfig();
+  res.json({
+    ...config,
+    adapters: getValidAdapters(),
+  });
+});
+
+app.put('/api/config', async (req, res) => {
+  try {
+    const { adapter, imagesDir, thumbnailsDir } = req.body || {};
+    const previousAdapter = getAdapterName();
+    const config = updateConfig({ adapter, imagesDir, thumbnailsDir });
+
+    if (config.adapter !== previousAdapter) {
+      await loadAdapter(config.adapter);
+    }
+
+    resetRuntimeState();
+
+    res.json({
+      ...config,
+      adapters: getValidAdapters(),
+      message: 'Configuration saved',
+    });
+  } catch (error) {
+    console.error('Config update failed:', error.message);
+    res.status(400).json({ error: error.message });
+  }
+});
+
 app.get('/api/adapter', (req, res) => {
+  if (!metadataAdapter) {
+    return res.status(503).json({ error: 'Adapter not loaded' });
+  }
   const adapterInfo = metadataAdapter.getAdapterInfo();
   res.json(adapterInfo);
 });
 
-/**
- * SSE endpoint for scan progress
- */
 app.get('/api/scan/progress', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('Access-Control-Allow-Origin', '*');
-  
-  // Send current state immediately
+
   res.write(`data: ${JSON.stringify(scanProgress)}\n\n`);
-  
-  // Add to listeners
+
   progressListeners.push(res);
-  
-  // Remove on disconnect
+
   req.on('close', () => {
     progressListeners = progressListeners.filter(r => r !== res);
   });
 });
 
-/**
- * Get all photos metadata
- */
 app.get('/api/photos', async (req, res) => {
   try {
+    if (!isConfigured()) {
+      return res.json({
+        total: 0,
+        withLocation: 0,
+        withMedia: 0,
+        hash: 'unconfigured',
+        needsConfig: true,
+        photos: [],
+      });
+    }
+
     const photos = await scanImages();
 
-    // Filter options
     const { withLocation, withMedia } = req.query;
 
     let filtered = photos;
@@ -397,8 +401,6 @@ app.get('/api/photos', async (req, res) => {
       filtered = filtered.filter(p => p.hasMediaFile);
     }
 
-    // Generate simple hash for cache invalidation
-    // Based on count and latest photo date
     const latestDate = photos.length > 0 ? photos[photos.length - 1].date : '';
     const hash = `${photos.length}-${latestDate}`;
 
@@ -406,7 +408,8 @@ app.get('/api/photos', async (req, res) => {
       total: photos.length,
       withLocation: photos.filter(p => p.hasLocation).length,
       withMedia: photos.filter(p => p.hasMediaFile).length,
-      hash,  // For cache invalidation
+      hash,
+      needsConfig: false,
       photos: filtered
     });
   } catch (error) {
@@ -415,11 +418,12 @@ app.get('/api/photos', async (req, res) => {
   }
 });
 
-/**
- * Get single photo metadata
- */
 app.get('/api/photos/:id', async (req, res) => {
   try {
+    if (!isConfigured()) {
+      return res.status(404).json({ error: 'Photo not found' });
+    }
+
     const photos = await scanImages();
     const photo = photos.find(p => p.id === parseInt(req.params.id));
 
@@ -434,23 +438,22 @@ app.get('/api/photos/:id', async (req, res) => {
   }
 });
 
-/**
- * Serve media files (HEIC, MOV, etc.) with thumbnail support
- */
 app.get('/images/:filename', async (req, res) => {
+  if (!isConfigured()) {
+    return res.status(503).json({ error: 'Not configured' });
+  }
+
   const filename = decodeURIComponent(req.params.filename);
-  // If filename is already a path (i.e., contains a path separator), use it directly
-  // Otherwise, use the default join
+  const imagesDir = getImagesDir();
   let filePath;
   if (filename.includes('/') || filename.includes('\\')) {
     filePath = filename;
   } else {
-    filePath = path.join(IMAGES_DIR, filename);
+    filePath = path.join(imagesDir, filename);
   }
   const wantsThumbnail = req.query.thumb === 'true';
 
-  // Security: ensure we're not serving files outside the images directory
-  if (!isResolvedPathInsideDir(filePath, IMAGES_DIR)) {
+  if (!isResolvedPathInsideDir(filePath, imagesDir)) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
@@ -462,21 +465,18 @@ app.get('/images/:filename', async (req, res) => {
 
   const ext = path.extname(filename).toLowerCase();
 
-  // Handle thumbnail requests for images
-  if (wantsThumbnail && IMAGE_EXTENSIONS.includes(ext)) {
+  if (wantsThumbnail && getImageExtensions().includes(ext)) {
     const thumbnailPath = getThumbnailPath(filename);
 
-    // Check if thumbnail already exists
     try {
       await fsp.access(thumbnailPath, fs.constants.F_OK);
       res.set('Content-Type', 'image/webp');
-      res.set('Cache-Control', 'public, max-age=604800'); // 1 week cache for thumbnails
+      res.set('Cache-Control', 'public, max-age=604800');
       return res.sendFile(thumbnailPath);
     } catch (e) {
-      // Thumbnail does not exist, proceed to generate
+      // generate below
     }
 
-    // Generate thumbnail on-demand
     const generatedPath = await generateThumbnail(filename);
     if (generatedPath) {
       res.set('Content-Type', 'image/webp');
@@ -484,14 +484,10 @@ app.get('/images/:filename', async (req, res) => {
       return res.sendFile(generatedPath);
     }
 
-    // Fall through to serve original if thumbnail generation failed
     console.warn(`Thumbnail generation failed for ${filename}, serving original`);
   }
 
-  // Serve original file, but convert HEIC if displaying full image
   if (ext === '.heic') {
-    // If browser requesting image, it likely can't show HEIC
-    // We convert it on the fly to JPEG using sharp
     try {
       const outputBuffer = await sharp(filePath, { failOnError: false })
         .rotate()
@@ -514,7 +510,6 @@ app.get('/images/:filename', async (req, res) => {
         console.error(`Fallback failed for ${filename}:`, fallbackErr.message);
       }
       console.error(`Failed to convert full HEIC ${filename}:`, e.message);
-      // Fallback to sending original
     }
   }
 
@@ -534,137 +529,137 @@ app.get('/images/:filename', async (req, res) => {
     res.set('Content-Type', contentTypes[ext]);
   }
 
-  // Set cache headers
   res.set('Cache-Control', 'public, max-age=86400');
   res.sendFile(filePath);
 });
 
-/**
- * Force refresh the photo cache
- */
 app.post('/api/refresh', async (req, res) => {
+  if (!isConfigured()) {
+    return res.json({ message: 'Not configured', count: 0 });
+  }
   photoCache = null;
   cacheTimestamp = null;
   const photos = await scanImages();
   res.json({ message: 'Cache refreshed', count: photos.length });
 });
 
-/**
- * Health check
- */
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    configured: isConfigured(),
+    timestamp: new Date().toISOString(),
+  });
 });
 
-/**
- * Priority thumbnail generation - generate thumbnails for visible items first
- * Called by frontend when timeline scrolls
- */
-app.post('/api/thumbnails/priority', express.json(), async (req, res) => {
+app.post('/api/thumbnails/priority', async (req, res) => {
+  if (!isConfigured()) {
+    return res.json({ queued: 0 });
+  }
+
   const { filenames, highPriority } = req.body;
-  
+
   if (!Array.isArray(filenames) || filenames.length === 0) {
     return res.json({ queued: 0 });
   }
-  
-  // Filter to only files that need thumbnails
+
   const needsGeneration = await Promise.all(filenames.map(async filename => {
     const exists = await thumbnailExists(filename);
     return exists ? null : filename;
   })).then(results => results.filter(Boolean));
-  
+
   if (needsGeneration.length === 0) {
     return res.json({ queued: 0, message: 'All thumbnails already exist' });
   }
-  
+
   if (highPriority) {
-    // High priority (clicked photo) - prepend to front of queue
     priorityQueue = [...needsGeneration, ...priorityQueue.filter(f => !needsGeneration.includes(f))];
     console.log(`⚡ High priority thumbnail request: ${needsGeneration[0]}`);
   } else {
-    // Normal priority (visible items) - replace queue
     priorityQueue = needsGeneration;
   }
-  
-  // Start priority processing if not already running
+
   if (!processingPriority) {
     processPriorityQueue();
   }
-  
+
   res.json({ queued: needsGeneration.length, highPriority: !!highPriority });
 });
 
-/**
- * Process priority queue - generates thumbnails for visible items immediately
- */
 async function processPriorityQueue() {
   if (processingPriority || priorityQueue.length === 0) {
     return;
   }
-  
+
   processingPriority = true;
-  
+
   const processNext = async () => {
     if (priorityQueue.length === 0) return;
-    
+
     const filename = priorityQueue.shift();
-    
-    // Skip if already generated
+
     if (!(await thumbnailExists(filename))) {
       await generateThumbnail(filename);
     }
-    
-    // Continue until queue is empty
+
     await processNext();
   };
 
-  // Start concurrent workers
   const workers = Array(Math.min(THUMBNAIL_CONCURRENCY, priorityQueue.length))
     .fill(null)
     .map(() => processNext());
-    
+
   await Promise.all(workers);
-  
+
   processingPriority = false;
 }
 
-/**
- * Get thumbnail generation status (with caching for performance)
- */
 app.get('/api/thumbnails/status', async (req, res) => {
+  if (!isConfigured()) {
+    return res.json({
+      imagesDirectory: '',
+      thumbnailsDirectory: '',
+      totalPhotos: 0,
+      totalImages: 0,
+      generated: 0,
+      pending: 0,
+      percentage: 0,
+      inProgress: false,
+      withLocation: 0,
+      withMedia: 0,
+    });
+  }
+
   const now = Date.now();
   const photos = photoCache || [];
-  
-  // Use cached status if available and fresh
-  if (thumbnailStatusCache && thumbnailStatusCacheTime && 
+  const thumbnailsDir = getThumbnailsDir();
+  const imagesDir = getImagesDir();
+
+  if (thumbnailStatusCache && thumbnailStatusCacheTime &&
       (now - thumbnailStatusCacheTime) < THUMBNAIL_STATUS_CACHE_DURATION) {
-    // Update only the dynamic fields
     thumbnailStatusCache.inProgress = backgroundGenerationInProgress;
     return res.json(thumbnailStatusCache);
   }
-  
-  // Calculate fresh status (optimized: read directory once)
+
   const imagePhotos = photos.filter(p => p.hasMediaFile && p.isImage);
-  
+
   let generated = 0;
   try {
-    const thumbFiles = await fsp.readdir(THUMBNAILS_DIR);
+    const thumbFiles = await fsp.readdir(thumbnailsDir);
     const thumbSet = new Set(thumbFiles);
-    
+
     generated = imagePhotos.filter(p => {
       const thumbPath = getThumbnailPath(p.filename);
       return thumbSet.has(path.basename(thumbPath));
     }).length;
   } catch (error) {
     console.error('Error reading thumbnails directory:', error);
-    // Fallback if directory doesn't exist yet
   }
 
   const percentage = imagePhotos.length > 0 ? Math.round((generated / imagePhotos.length) * 100) : 0;
 
   thumbnailStatusCache = {
-    imagesDirectory: IMAGES_DIR,
-    thumbnailsDirectory: THUMBNAILS_DIR,
+    imagesDirectory: imagesDir,
+    thumbnailsDirectory: thumbnailsDir,
     totalPhotos: photos.length,
     totalImages: imagePhotos.length,
     generated,
@@ -675,15 +670,15 @@ app.get('/api/thumbnails/status', async (req, res) => {
     withMedia: photos.filter(p => p.hasMediaFile).length
   };
   thumbnailStatusCacheTime = now;
-  
+
   res.json(thumbnailStatusCache);
 });
 
-/**
- * Background thumbnail generation worker
- * Runs after server startup to pre-generate thumbnails
- */
 async function startBackgroundThumbnailGeneration() {
+  if (!isConfigured()) {
+    return;
+  }
+
   if (backgroundGenerationInProgress) {
     console.log('Background thumbnail generation already in progress');
     return;
@@ -694,11 +689,11 @@ async function startBackgroundThumbnailGeneration() {
   try {
     const photos = await scanImages();
     const imagePhotos = photos.filter(p => p.hasMediaFile && p.isImage);
-    
-    // Use the optimized set-based check for initial filter
-    const thumbFiles = await fsp.readdir(THUMBNAILS_DIR).catch(() => []);
+    const thumbnailsDir = getThumbnailsDir();
+
+    const thumbFiles = await fsp.readdir(thumbnailsDir).catch(() => []);
     const thumbSet = new Set(thumbFiles);
-    
+
     const needsThumbnail = imagePhotos.filter(p => {
       const thumbPath = getThumbnailPath(p.filename);
       return !thumbSet.has(path.basename(thumbPath));
@@ -718,7 +713,6 @@ async function startBackgroundThumbnailGeneration() {
 
     const processNext = async () => {
       while (index < needsThumbnail.length) {
-        // Pause background work if priority queue has items
         if (priorityQueue.length > 0) {
           await processPriorityQueue();
         }
@@ -726,11 +720,10 @@ async function startBackgroundThumbnailGeneration() {
         const photo = needsThumbnail[index++];
         if (!photo) break;
 
-        // Skip if already generated (might have been done by priority processing)
         if (await thumbnailExists(photo.filename)) {
           continue;
         }
-        
+
         const result = await generateThumbnail(photo.filename);
 
         if (result) {
@@ -739,14 +732,12 @@ async function startBackgroundThumbnailGeneration() {
           failed++;
         }
 
-        // Log progress every 20 thumbnails
         if ((generated + failed) % 20 === 0) {
           console.log(`   Progress: ${generated + failed}/${needsThumbnail.length} (${generated} success, ${failed} failed)`);
         }
       }
     };
 
-    // Start concurrent workers
     const workers = Array(THUMBNAIL_CONCURRENCY).fill(null).map(() => processNext());
     await Promise.all(workers);
 
@@ -758,32 +749,81 @@ async function startBackgroundThumbnailGeneration() {
   }
 }
 
-// Start server
-app.listen(PORT, async () => {
-  // Ensure thumbnails directory exists
-  await fsp.mkdir(THUMBNAILS_DIR, { recursive: true }).catch(err => {
-    if (err.code !== 'EEXIST') throw err;
+/**
+ * Serve packaged React build when WHENWHERE_STATIC_DIR is set.
+ */
+function mountStaticFrontend() {
+  const staticDir = process.env.WHENWHERE_STATIC_DIR;
+  if (!staticDir || !fs.existsSync(staticDir)) {
+    return;
+  }
+
+  app.use(express.static(staticDir));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/images')) {
+      return next();
+    }
+    res.sendFile(path.join(staticDir, 'index.html'));
   });
+  console.log(`📦 Serving frontend from: ${staticDir}`);
+}
 
-  const adapterInfo = metadataAdapter.getAdapterInfo();
-  console.log(`\n🗺️  Photo Explorer Server running at http://localhost:${PORT}`);
-  console.log(`📁 Serving media from: ${IMAGES_DIR}`);
-  console.log(`🖼️  Thumbnails stored in: ${THUMBNAILS_DIR}`);
-  console.log(`🔌 Metadata adapter: ${adapterInfo.displayName}`);
-  console.log(`   ${adapterInfo.description}`);
-  console.log(`\nAPI Endpoints:`);
-  console.log(`  GET  /api/adapter             - Get adapter info`);
-  console.log(`  GET  /api/photos              - List all photos`);
-  console.log(`  GET  /api/photos?withLocation=true - Photos with GPS only`);
-  console.log(`  GET  /api/photos?withMedia=true    - Photos with media files only`);
-  console.log(`  GET  /api/photos/:id          - Get single photo`);
-  console.log(`  GET  /images/:filename        - Serve media file`);
-  console.log(`  GET  /images/:filename?thumb=true - Serve thumbnail`);
-  console.log(`  GET  /api/thumbnails/status   - Thumbnail generation status`);
-  console.log(`  POST /api/refresh             - Refresh cache\n`);
+let serverInstance = null;
 
-  // Note: We don't pre-scan at startup anymore
-  // The scan is triggered by the first /api/photos request
-  // This allows SSE progress listeners to connect first
-  console.log('⏳ Ready - scan will start when first client connects\n');
-});
+/**
+ * Start the HTTP server. Safe to call from Electron or CLI.
+ */
+export async function startServer(options = {}) {
+  if (serverInstance) {
+    return serverInstance;
+  }
+
+  mountStaticFrontend();
+
+  const port = options.port || getPort();
+
+  return new Promise((resolve, reject) => {
+    serverInstance = app.listen(port, async () => {
+      const config = getConfig();
+
+      if (config.thumbnailsDir) {
+        await fsp.mkdir(config.thumbnailsDir, { recursive: true }).catch(err => {
+          if (err.code !== 'EEXIST') console.warn('Could not create thumbnails dir:', err.message);
+        });
+      }
+
+      console.log(`\n🗺️  WhenWhere Server running at http://localhost:${port}`);
+      if (config.configured) {
+        const adapterInfo = metadataAdapter.getAdapterInfo();
+        console.log(`📁 Serving media from: ${config.imagesDir}`);
+        console.log(`🖼️  Thumbnails stored in: ${config.thumbnailsDir}`);
+        console.log(`🔌 Metadata adapter: ${adapterInfo.displayName}`);
+      } else {
+        console.log(`⚙️  Not configured yet — set photos folder in the app settings`);
+      }
+      console.log(`💾 Config file: ${config.configPath}`);
+      console.log(`\nAPI Endpoints:`);
+      console.log(`  GET  /api/config              - Get configuration`);
+      console.log(`  PUT  /api/config              - Update configuration`);
+      console.log(`  GET  /api/adapter             - Get adapter info`);
+      console.log(`  GET  /api/photos              - List all photos`);
+      console.log(`  POST /api/refresh             - Refresh cache\n`);
+      console.log('⏳ Ready - scan will start when first client connects\n');
+
+      resolve({ app, server: serverInstance, port });
+    });
+
+    serverInstance.on('error', reject);
+  });
+}
+
+export { app };
+
+// Auto-start when run directly (node server/index.js)
+const isDirectRun = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename);
+if (isDirectRun) {
+  startServer().catch((err) => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  });
+}

@@ -6,9 +6,26 @@ import GridView from './components/GridView';
 import Lightbox from './components/Lightbox';
 import StatusPopover from './components/StatusPopover';
 import ScanProgress from './components/ScanProgress';
-import { getCachedPhotos, setCachedPhotos, getCacheMetadata } from './services/photoCache';
+import Settings from './components/Settings';
+import { getCachedPhotos, setCachedPhotos, getCacheMetadata, clearCache } from './services/photoCache';
 import { API_URL } from './config';
 import './App.css';
+
+function selectDefaultPhoto(photoList, setSelectedPhoto) {
+  const firstWithLocationAndMedia = photoList.find(p => p.hasLocation && p.hasMediaFile);
+  if (firstWithLocationAndMedia) {
+    setSelectedPhoto(firstWithLocationAndMedia);
+  } else {
+    const firstWithLocation = photoList.find(p => p.hasLocation);
+    if (firstWithLocation) {
+      setSelectedPhoto(firstWithLocation);
+    } else if (photoList.length > 0) {
+      setSelectedPhoto(photoList[0]);
+    } else {
+      setSelectedPhoto(null);
+    }
+  }
+}
 
 function App() {
   const [viewMode, setViewMode] = useState('map');
@@ -22,8 +39,11 @@ function App() {
   const [showOnlyWithMedia, setShowOnlyWithMedia] = useState(true);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [sseReady, setSseReady] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [needsConfig, setNeedsConfig] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
 
-  // Fetch photos - triggered when SSE is ready
+  // Fetch photos - triggered when SSE is ready or after settings save
   useEffect(() => {
     if (!sseReady) return; // Wait for SSE to connect first
     
@@ -39,7 +59,7 @@ function App() {
           hadCachedPhotos = true;
           console.log(`Loaded ${cachedPhotos.length} photos from cache`);
           setPhotos(cachedPhotos);
-          selectDefaultPhoto(cachedPhotos);
+          selectDefaultPhoto(cachedPhotos, setSelectedPhoto);
           setLoading(false);  // Show UI immediately with cached data
           setSyncing(true);   // Indicate background sync
         }
@@ -51,6 +71,18 @@ function App() {
         }
         
         const data = await response.json();
+
+        if (data.needsConfig) {
+          setNeedsConfig(true);
+          setSettingsOpen(true);
+          setPhotos([]);
+          setSelectedPhoto(null);
+          setLoading(false);
+          setSyncing(false);
+          return;
+        }
+
+        setNeedsConfig(false);
         const freshPhotos = data.photos;
         
         // Step 3: Check if data has changed
@@ -63,7 +95,7 @@ function App() {
           
           // Only select default photo if we didn't have cached data
           if (!cachedPhotos || cachedPhotos.length === 0) {
-            selectDefaultPhoto(freshPhotos);
+            selectDefaultPhoto(freshPhotos, setSelectedPhoto);
           }
           
           // Update cache in background
@@ -84,22 +116,18 @@ function App() {
       }
     }
     
-    function selectDefaultPhoto(photoList) {
-      const firstWithLocationAndMedia = photoList.find(p => p.hasLocation && p.hasMediaFile);
-      if (firstWithLocationAndMedia) {
-        setSelectedPhoto(firstWithLocationAndMedia);
-      } else {
-        const firstWithLocation = photoList.find(p => p.hasLocation);
-        if (firstWithLocation) {
-          setSelectedPhoto(firstWithLocation);
-        } else if (photoList.length > 0) {
-          setSelectedPhoto(photoList[0]);
-        }
-      }
-    }
-    
     loadPhotos();
-  }, [sseReady]);
+  }, [sseReady, reloadToken]);
+
+  const handleSettingsSaved = useCallback(async () => {
+    await clearCache();
+    setNeedsConfig(false);
+    setSettingsOpen(false);
+    setPhotos([]);
+    setSelectedPhoto(null);
+    setLoading(true);
+    setReloadToken((token) => token + 1);
+  }, []);
   
   // Callback when SSE connection is ready
   const handleSseReady = useCallback(() => {
@@ -297,7 +325,7 @@ function App() {
         
         <div className="header-right">
           <div className="photo-stats">
-            <span className="stat" title="Total XMP files">
+            <span className="stat" title="Total photos">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
                 <polyline points="14 2 14 8 20 8"></polyline>
@@ -320,6 +348,18 @@ function App() {
               {photosWithMedia.length}
             </span>
           </div>
+          <button
+            type="button"
+            className="settings-trigger"
+            onClick={() => setSettingsOpen(true)}
+            title="Settings"
+            aria-label="Open settings"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+          </button>
           <StatusPopover />
         </div>
       </header>
@@ -387,6 +427,15 @@ function App() {
           onNavigate={handleLightboxNavigate}
         />
       )}
+
+      <Settings
+        open={settingsOpen}
+        required={needsConfig}
+        onClose={() => {
+          if (!needsConfig) setSettingsOpen(false);
+        }}
+        onSaved={handleSettingsSaved}
+      />
     </div>
   );
 }

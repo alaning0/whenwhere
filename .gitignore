@@ -2,3 +2,9 @@ node_modules
 *.db
 Content/
 server/.thumbnails/
+server/config.json
+server/.env
+build/
+build-resources/
+release/
+.DS_Store
