@@ -14,6 +14,9 @@
  * Works with:
  *   - Google Photos Takeout exports
  *   - Supports recursive subdirectory scanning
+ *
+ * Album/system metadata JSONs (metadata.json, shared album comments, etc.)
+ * are skipped — only JSONs with a photoTakenTime are treated as photos.
  */
 
 import fsp from 'fs/promises';
@@ -32,6 +35,22 @@ import {
   comparePhotosByDate,
   mapWithConcurrency
 } from './utils.js';
+
+// Takeout files that are never photo sidecars, by exact basename
+const NON_PHOTO_JSON = new Set([
+  'print-subscriptions.json',
+  'shared_album_comments.json',
+  'user-generated-memory-titles.json',
+]);
+
+function isNonPhotoJson(jsonPath) {
+  const base = path.basename(jsonPath).toLowerCase();
+  // Album-level metadata: "metadata.json", "metadata(1).json", ...
+  if (/^metadata(\(\d+\))?\.json$/.test(base)) {
+    return true;
+  }
+  return NON_PHOTO_JSON.has(base);
+}
 
 /**
  * Scan a directory for JSON metadata files and extract photo metadata
@@ -52,7 +71,7 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
   }, options);
   console.log(`Google Photos Takeout Adapter: Found ${files.length} files`);
 
-  const jsonFiles = files.filter(f => f.toLowerCase().endsWith('.json'));
+  const jsonFiles = files.filter(f => f.toLowerCase().endsWith('.json') && !isNonPhotoJson(f));
   const mediaFiles = files.filter(f => {
     const ext = path.extname(f).toLowerCase();
     return MEDIA_EXTENSIONS.includes(ext);
@@ -95,9 +114,13 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
 
 /**
  * Build a photo object for a single Takeout JSON sidecar.
+ * Returns null for album/system metadata (no photoTakenTime).
  */
 async function processJsonFile(jsonFile, mediaIndex, serverPort) {
   const jsonData = await extractJsonData(jsonFile);
+  if (!jsonData.isPhoto) {
+    return null;
+  }
 
   const mediaFile = findMediaFile(jsonFile, mediaIndex, '.json');
   const hasMediaFile = mediaFile !== null;
@@ -149,9 +172,12 @@ async function processJsonFile(jsonFile, mediaIndex, serverPort) {
 }
 
 /**
- * Extract metadata from Google Photos Takeout JSON file
+ * Extract metadata from Google Photos Takeout JSON file.
+ * isPhoto distinguishes real photo sidecars (which always carry
+ * photoTakenTime) from album/system metadata files.
+ *
  * @param {string} jsonPath - Full path to JSON file
- * @returns {Promise<{ lat: number|null, lng: number|null, date: string|null }>}
+ * @returns {Promise<{ lat: number|null, lng: number|null, date: string|null, isPhoto: boolean }>}
  */
 async function extractJsonData(jsonPath) {
   try {
@@ -171,10 +197,10 @@ async function extractJsonData(jsonPath) {
       }
     }
 
-    return { lat, lng, date };
+    return { lat, lng, date, isPhoto: Boolean(timestamp) };
   } catch (error) {
     console.error(`Error reading JSON ${jsonPath}:`, error.message);
-    return { lat: null, lng: null, date: null };
+    return { lat: null, lng: null, date: null, isPhoto: false };
   }
 }
 

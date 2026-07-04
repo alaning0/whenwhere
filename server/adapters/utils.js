@@ -197,9 +197,13 @@ export function buildMediaFileIndex(mediaFiles) {
   return index;
 }
 
+const SUPPLEMENTAL_SUFFIX = '.supplemental-metadata';
+
 /**
  * Find the media file for a sidecar/metadata file
- * Handles both XMP (.xmp) and Google Takeout (.json) naming conventions
+ * Handles XMP (.xmp) and Google Takeout (.json) naming conventions, including
+ * Takeout's duplicate naming ("IMG.JPG(1).json" -> "IMG(1).JPG") and its
+ * truncation of long names (best-effort unique-prefix match).
  *
  * @param {string} sidecarFilename - Name of the sidecar file (e.g., "IMG_1234.HEIC.xmp")
  * @param {Map<string,string>} mediaIndex - From buildMediaFileIndex()
@@ -210,10 +214,45 @@ export function findMediaFile(sidecarFilename, mediaIndex, extension = '.xmp') {
   // Remove extension to get the base media filename
   let mediaFilename = sidecarFilename.replace(new RegExp(`${extension}$`, 'i'), '');
 
-  // Handle Google Photos supplemental metadata naming
-  mediaFilename = mediaFilename.replace('.supplemental-metadata', '');
+  // Strip Google's ".supplemental-metadata" suffix, including truncated
+  // variants like ".supplemental-metad" (Takeout caps the name length)
+  const suffixMatch = mediaFilename.match(/\.[a-z-]{4,}$/i);
+  if (suffixMatch && SUPPLEMENTAL_SUFFIX.startsWith(suffixMatch[0].toLowerCase())) {
+    mediaFilename = mediaFilename.slice(0, -suffixMatch[0].length);
+  }
 
-  return mediaIndex.get(mediaFilename.toLowerCase()) || null;
+  const direct = mediaIndex.get(mediaFilename.toLowerCase());
+  if (direct) {
+    return direct;
+  }
+
+  // Takeout duplicate naming: "IMG_1234.JPG(1)" refers to media "IMG_1234(1).JPG"
+  const dupMatch = mediaFilename.match(/^(.*)(\.[A-Za-z0-9]+)(\(\d+\))$/);
+  if (dupMatch) {
+    const [, base, ext, dup] = dupMatch;
+    const relocated = mediaIndex.get(`${base}${dup}${ext}`.toLowerCase());
+    if (relocated) {
+      return relocated;
+    }
+  }
+
+  // Takeout truncates long JSON base names; accept a unique prefix match.
+  // Only attempted for long names so the linear pass stays rare.
+  if (path.basename(mediaFilename).length >= 40) {
+    const lowerPrefix = mediaFilename.toLowerCase();
+    let match = null;
+    for (const [key, actual] of mediaIndex) {
+      if (key.startsWith(lowerPrefix)) {
+        if (match) {
+          return null; // ambiguous
+        }
+        match = actual;
+      }
+    }
+    return match;
+  }
+
+  return null;
 }
 
 /**
