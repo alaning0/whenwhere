@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const http = require('http');
@@ -6,9 +6,104 @@ const fs = require('fs');
 
 const SERVER_PORT = process.env.PORT || '3002';
 const isDev = !app.isPackaged;
+const GITHUB_REPO_URL = 'https://github.com/alaning0/whenwhere';
 
 let mainWindow = null;
 let serverProcess = null;
+
+function showAbout() {
+  const version = app.getVersion();
+  dialog
+    .showMessageBox(mainWindow || undefined, {
+      type: 'info',
+      title: 'About WhenWhere',
+      message: 'WhenWhere',
+      detail: [
+        `Version ${version}`,
+        '',
+        'Visualize photos on maps and timelines using GPS metadata.',
+        '',
+        GITHUB_REPO_URL,
+      ].join('\n'),
+      buttons: ['Open GitHub', 'OK'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    })
+    .then(({ response }) => {
+      if (response === 0) {
+        shell.openExternal(GITHUB_REPO_URL);
+      }
+    });
+}
+
+function createAppMenu() {
+  const helpMenu = {
+    label: 'Help',
+    submenu: [
+      {
+        label: 'About WhenWhere',
+        click: () => showAbout(),
+      },
+      {
+        label: 'View on GitHub',
+        click: () => shell.openExternal(GITHUB_REPO_URL),
+      },
+    ],
+  };
+
+  const template = [
+    {
+      label: 'File',
+      submenu: [{ role: 'quit' }],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
+    helpMenu,
+  ];
+
+  if (process.platform === 'darwin') {
+    template.unshift({
+      label: app.name,
+      submenu: [
+        { label: 'About WhenWhere', click: () => showAbout() },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    });
+  }
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
 
 function getServerEntry() {
   if (isDev) {
@@ -176,6 +271,7 @@ ipcMain.handle('select-folder', async (_event, title) => {
 });
 
 app.whenReady().then(async () => {
+  createAppMenu();
   startBackend();
 
   try {
