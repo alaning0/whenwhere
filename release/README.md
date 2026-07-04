@@ -6,16 +6,18 @@ Pre-built installer for WhenWhere. No Node.js or developer tools required.
 
 ## Download (this folder)
 
+Older installers may still be present here (Git LFS). Prefer the latest **GitHub Release** for the current version.
+
 | File | Description |
 |------|-------------|
-| [WhenWhere Setup 1.0.0.exe](./WhenWhere%20Setup%201.0.0.exe) | Windows x64 installer (NSIS) |
+| [WhenWhere Setup 1.0.0.exe](./WhenWhere%20Setup%201.0.0.exe) | Older Windows x64 installer (NSIS) |
 
-> **Git clone note:** this `.exe` is stored with [Git LFS](https://git-lfs.com). If the file is only a few hundred bytes after cloning, run `git lfs pull` (or install Git LFS and re-clone). On GitHub, use the **Download** button on the file page to get the real binary.
+> **Git clone note:** `.exe` files in this folder are stored with [Git LFS](https://git-lfs.com). If a file is only a few hundred bytes after cloning, run `git lfs pull` (or install Git LFS and re-clone). On GitHub, use the **Download** button on the file page to get the real binary.
 
 ## Install
 
-1. Double-click **WhenWhere Setup 1.0.0.exe**
-2. Choose an install location (or accept the default)
+1. Download the latest `WhenWhere Setup *.exe` from [GitHub Releases](https://github.com/alaning0/whenwhere/releases)
+2. Double-click the installer and choose an install location (or accept the default)
 3. Finish the wizard — shortcuts are added to the Start Menu and desktop
 
 To remove the app later, use **Apps & features** in Windows Settings, or the uninstaller from the install folder.
