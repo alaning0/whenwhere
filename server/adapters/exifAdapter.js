@@ -9,6 +9,9 @@
  * Works with:
  *   - Apple iCloud Photos exports
  *   - Any folder containing images with EXIF metadata
+ *
+ * Files without usable EXIF (screenshots, PNGs, videos) fall back to the
+ * file's creation/modification date instead of being dropped.
  */
 
 import fsp from 'fs/promises';
@@ -91,41 +94,39 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
 
 /**
  * Build a photo object for a single media file.
+ * EXIF is read for images only; anything without a usable EXIF date
+ * (videos, screenshots, PNGs) uses the file date instead.
  */
 async function processMediaFile(mediaFile, serverPort) {
   const ext = path.extname(mediaFile).toLowerCase();
   const isVideoFile = VIDEO_EXTENSIONS.includes(ext);
   const isImageFile = IMAGE_EXTENSIONS.includes(ext);
 
-  if (isVideoFile) {
-    // Can't handle video EXIF yet
-    return null;
-  }
-
   const stats = await fsp.stat(mediaFile);
 
-  let tags;
-  try {
-    const readSize = Math.min(EXIF_READ_BYTES, stats.size);
-    const buffer = Buffer.alloc(readSize);
-    const fd = await fsp.open(mediaFile, 'r');
+  let tags = null;
+  if (isImageFile) {
     try {
-      await fd.read(buffer, 0, readSize, 0);
-    } finally {
-      await fd.close();
+      const readSize = Math.min(EXIF_READ_BYTES, stats.size);
+      const buffer = Buffer.alloc(readSize);
+      const fd = await fsp.open(mediaFile, 'r');
+      try {
+        await fd.read(buffer, 0, readSize, 0);
+      } finally {
+        await fd.close();
+      }
+      tags = ExifReader.load(buffer, { expanded: false });
+    } catch (err) {
+      tags = null; // No parseable EXIF — fall back to file dates below
     }
-    tags = ExifReader.load(buffer, { expanded: false });
-  } catch (err) {
-    console.error(`[EXIF Adapter] Error reading EXIF for: ${mediaFile}`, err.message);
-    return null;
   }
 
-  const latitude = parseCoordinate(tags.GPSLatitude, tags.GPSLatitudeRef);
-  const longitude = parseCoordinate(tags.GPSLongitude, tags.GPSLongitudeRef);
-  const rawDate = tags.DateTimeOriginal?.description || tags.DateTimeOriginal;
+  const latitude = tags ? parseCoordinate(tags.GPSLatitude, tags.GPSLatitudeRef) : null;
+  const longitude = tags ? parseCoordinate(tags.GPSLongitude, tags.GPSLongitudeRef) : null;
 
   // Parse EXIF date format: "2020:11:08 12:00:17" -> ISO format
-  let dateObj;
+  const rawDate = tags ? (tags.DateTimeOriginal?.description || tags.DateTimeOriginal) : null;
+  let dateObj = null;
   if (rawDate && typeof rawDate === 'string') {
     const exifMatch = rawDate.match(/^(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/);
     if (exifMatch) {
@@ -134,14 +135,9 @@ async function processMediaFile(mediaFile, serverPort) {
     } else {
       dateObj = new Date(rawDate);
     }
-  } else {
-    dateObj = new Date(rawDate);
   }
-
-  // Skip if date is invalid
-  if (isNaN(dateObj.getTime())) {
-    console.warn(`[EXIF Adapter] Invalid date for ${mediaFile}: ${rawDate}`);
-    return null;
+  if (!dateObj || isNaN(dateObj.getTime())) {
+    dateObj = stats.birthtime || stats.mtime;
   }
 
   const formattedDates = formatDates(dateObj);
