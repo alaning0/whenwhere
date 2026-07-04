@@ -4,6 +4,26 @@ Visualize your photos on interactive maps and timelines using GPS metadata from 
 
 <img width="1424" height="843" alt="image" src="screenshot.png" />
 
+## Install (Windows)
+
+Download and run the installer from this repo:
+
+**[release/WhenWhere Setup 1.0.0.exe](release/WhenWhere%20Setup%201.0.0.exe)**
+
+1. Double-click the installer and follow the prompts
+2. Launch **WhenWhere** from the Start Menu or desktop shortcut
+3. On first launch, choose your photos folder (and metadata adapter) in **Settings**
+
+No Node.js install is required for the packaged app. Paths are saved under `%APPDATA%\whenwhere\`.
+
+To rebuild the installer after code changes:
+
+```bash
+npm run dist:win
+```
+
+The output is written to `release/WhenWhere Setup <version>.exe`.
+
 ## Features
 
 - **Map View**: Interactive Leaflet map with photo markers, clustering, and multiple tile layers
@@ -28,12 +48,12 @@ Visualize your photos on interactive maps and timelines using GPS metadata from 
 | `xmp` | XMP sidecar files | osxphotos exports with `--sidecar xmp` |
 | `google-takeout` | JSON metadata files | Google Photos Takeout exports |
 
-## Prerequisites
+## Prerequisites (development)
 
 - Node.js 18+
 - npm
 
-## Quick Start
+## Quick Start (development)
 
 ### 1. Clone and Install
 
@@ -47,14 +67,23 @@ cd ..
 npm install
 ```
 
-### 2. Configure
+### 2. Run
 
 ```bash
-# Copy the example config
-cp server/.env.example server/.env
+# Browser: server + React dev server
+npm start
 
-# Edit with your paths
-nano server/.env
+# Or desktop shell (Electron)
+npm run electron:dev
+```
+
+- Frontend: http://localhost:3000
+- API: http://localhost:3002
+
+On first run, open **Settings** in the app and choose your photos folder. You can also set defaults for development via `server/.env` (optional):
+
+```bash
+cp server/.env.example server/.env
 ```
 
 Example `.env`:
@@ -65,25 +94,17 @@ THUMBNAILS_DIR=/path/to/thumbnails
 PORT=3002
 ```
 
-### 3. Run
-
-```bash
-# Start both server and frontend
-npm start
-```
-
-- Frontend: http://localhost:3000
-- API: http://localhost:3002
-
 ## Configuration
 
-All configuration is done via environment variables in `server/.env`:
+Prefer the in-app **Settings** panel (photos folder, thumbnails folder, metadata adapter). Settings are stored in `config.json` (`%APPDATA%\whenwhere\` in the packaged app, or `server/config.json` in development).
+
+Optional development defaults via `server/.env`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ADAPTER` | `exif` | Metadata adapter: `exif`, `xmp`, or `google-takeout` |
-| `IMAGES_DIR` | `./Content` | Directory containing your photos |
-| `THUMBNAILS_DIR` | `./.thumbnails` | Where to store generated thumbnails |
+| `IMAGES_DIR` | _(required in UI)_ | Directory containing your photos |
+| `THUMBNAILS_DIR` | `<IMAGES_DIR>/.thumbnails` | Where to store generated thumbnails |
 | `PORT` | `3002` | Server port |
 
 ## Architecture
@@ -194,36 +215,37 @@ See `server/adapters/_template.js` for full documentation.
 
 ```
 whenwhere/
+├── release/
+│   └── WhenWhere Setup *.exe   # Windows installer (Git LFS)
+├── electron/
+│   ├── main.js                 # Electron main process
+│   └── preload.js              # Folder picker bridge
 ├── public/
 │   └── index.html
 ├── server/
-│   ├── .env.example        # Configuration template
-│   ├── config.js           # Configuration loader
-│   ├── index.js            # Express server
+│   ├── .env.example            # Optional dev defaults
+│   ├── config.js               # Configuration loader
+│   ├── index.js                # Express server
 │   ├── package.json
 │   └── adapters/
-│       ├── _template.js    # Adapter template
-│       ├── utils.js        # Shared utilities
+│       ├── _template.js
+│       ├── utils.js
 │       ├── exifAdapter.js
 │       ├── xmpAdapter.js
 │       └── GooglePhotosTakeoutAdapter.js
 ├── src/
-│   ├── config.js           # Frontend config
+│   ├── config.js
 │   ├── App.js
-│   ├── App.css
-│   ├── index.js
-│   ├── index.css
 │   ├── components/
-│   │   ├── MapView.js / .css
-│   │   ├── Timeline.js / .css
-│   │   ├── ListView.js / .css
-│   │   ├── GridView.js / .css
-│   │   ├── Lightbox.js / .css
-│   │   ├── CalendarOverlay.js / .css
-│   │   ├── ScanProgress.js / .css
-│   │   └── StatusPopover.js / .css
+│   │   ├── Settings.js         # In-app configuration
+│   │   ├── MapView.js
+│   │   ├── Timeline.js
+│   │   ├── ListView.js
+│   │   ├── GridView.js
+│   │   ├── Lightbox.js
+│   │   └── ...
 │   └── services/
-│       └── photoCache.js   # IndexedDB cache
+│       └── photoCache.js
 ├── package.json
 └── README.md
 ```
@@ -260,7 +282,7 @@ Then set `ADAPTER=exif` and `IMAGES_DIR=/path/to/photos`.
 - HEIC images converted to JPEG on-the-fly (may be slow for very large files)
 - Video EXIF extraction not yet supported
 - Large libraries (10,000+ photos) may have slower initial scan
-- No user preferences persistence (view state resets on refresh)
+- View mode / filter preferences are not persisted yet (folder settings are)
 
 ## License
 
