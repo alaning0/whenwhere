@@ -38,8 +38,8 @@
     "build": "react-scripts build",
     "electron:dev": "concurrently --kill-others --names \"frontend,electron\" --prefix-colors \"green,magenta\" \"npm run frontend\" \"wait-on http://localhost:3000 && electron .\"",
     "prepare:node": "node scripts/prepare-node.js",
-    "dist": "npm run build && npm run prepare:node && electron-builder",
-    "dist:win": "npm run build && npm run prepare:node && electron-builder --win",
+    "dist": "npm run build && npm run prepare:node && electron-builder --publish never",
+    "dist:win": "npm run build && npm run prepare:node && electron-builder --win --publish never",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
   },
@@ -48,6 +48,7 @@
     "appId": "com.whenwhere.app",
     "productName": "WhenWhere",
     "copyright": "Copyright © WhenWhere",
+    "publish": null,
     "directories": {
       "output": "release"
     },
