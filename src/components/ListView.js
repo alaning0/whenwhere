@@ -1,27 +1,32 @@
-import React, { useMemo, useCallback, memo } from 'react';
+import React, { useMemo, useCallback, memo, useRef, useEffect, useState } from 'react';
+import { VariableSizeList as List } from 'react-window';
 import { format } from 'date-fns';
 import './ListView.css';
 
+// Fixed row heights so the list can be virtualized (CSS pins .list-item to 76px)
+const PHOTO_ROW_HEIGHT = 86;        // 76px item + 10px gap
+const HEADER_ROW_HEIGHT = 72;       // 28px group gap + 30px header + 14px gap
+const FIRST_HEADER_ROW_HEIGHT = 44; // no group gap above the first header
+
 // Memoized list item
-const ListItem = memo(function ListItem({ photo, isSelected, index, onSelect, onOpenLightbox }) {
+const ListItem = memo(function ListItem({ photo, isSelected, onSelect, onOpenLightbox }) {
   const handleClick = useCallback(() => {
     onSelect(photo);
     onOpenLightbox();
   }, [photo, onSelect, onOpenLightbox]);
-  
+
   return (
     <div
       className={`list-item ${isSelected ? 'selected' : ''} ${photo.isVideo ? 'is-video' : ''}`}
       onClick={handleClick}
-      style={{ animationDelay: `${Math.min(index * 0.03, 0.3)}s` }}
     >
       <div className="list-item-thumb">
-        {photo.hasMediaFile && photo.url && !photo.isVideo ? (
-          <img src={photo.url} alt={photo.title} loading="lazy" />
+        {photo.hasMediaFile && photo.thumbnail && !photo.isVideo ? (
+          <img src={photo.thumbnail} alt={photo.title} loading="lazy" />
         ) : (
           <div className="thumb-placeholder">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              {photo.isVideo ? 
+              {photo.isVideo ?
                 <polygon points="5 3 19 12 5 21 5 3"></polygon> :
                 <><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle></>
               }
@@ -29,7 +34,7 @@ const ListItem = memo(function ListItem({ photo, isSelected, index, onSelect, on
           </div>
         )}
       </div>
-      
+
       <div className="list-item-info">
         <h4>{photo.title}</h4>
         <div className="list-item-meta">
@@ -56,7 +61,7 @@ const ListItem = memo(function ListItem({ photo, isSelected, index, onSelect, on
           {photo.hasLocation && <span className="badge gps">GPS</span>}
         </div>
       </div>
-      
+
       <div className="list-item-actions">
         {photo.hasLocation && (
           <button className="action-btn" title="Has GPS location">
@@ -72,30 +77,97 @@ const ListItem = memo(function ListItem({ photo, isSelected, index, onSelect, on
   );
 });
 
-function ListView({ photos, selectedPhoto, onPhotoSelect, onOpenLightbox }) {
-  // Memoize sorted photos
-  const sortedPhotos = useMemo(
-    () => [...photos].sort((a, b) => new Date(a.date) - new Date(b.date)),
-    [photos]
-  );
+// Virtualized row: either a month header or a photo item
+const ListRow = memo(function ListRow({ index, style, data }) {
+  const { rows, selectedId, onSelect, onOpenLightbox } = data;
+  const row = rows[index];
 
-  // Memoize grouped photos
-  const groupedPhotos = useMemo(() => {
-    return sortedPhotos.reduce((acc, photo) => {
-      const date = new Date(photo.date);
-      const yearMonth = format(date, 'MMMM yyyy');
-      if (!acc[yearMonth]) {
-        acc[yearMonth] = [];
+  if (row.type === 'header') {
+    return (
+      <div style={style} className="list-row list-row-header">
+        <div className="group-header">
+          <h3>{row.label}</h3>
+          <span className="group-count">{row.count}</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={style} className="list-row">
+      <ListItem
+        photo={row.photo}
+        isSelected={selectedId === row.photo.id}
+        onSelect={onSelect}
+        onOpenLightbox={onOpenLightbox}
+      />
+    </div>
+  );
+});
+
+function ListView({ photos, selectedPhoto, onPhotoSelect, onOpenLightbox }) {
+  const containerRef = useRef(null);
+  const listRef = useRef(null);
+  const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
+
+  // Photos arrive date-sorted from the server/cache. Flatten the month groups
+  // into a single row array so the whole list can be windowed.
+  const rows = useMemo(() => {
+    const out = [];
+    let currentHeader = null;
+    for (const photo of photos) {
+      const month = format(new Date(photo.date), 'MMMM yyyy');
+      if (!currentHeader || currentHeader.label !== month) {
+        currentHeader = { type: 'header', label: month, count: 0 };
+        out.push(currentHeader);
       }
-      acc[yearMonth].push(photo);
-      return acc;
-    }, {});
-  }, [sortedPhotos]);
+      currentHeader.count++;
+      out.push({ type: 'photo', photo });
+    }
+    return out;
+  }, [photos]);
+
+  // Row heights changed positions when the data changes — clear the size cache
+  useEffect(() => {
+    listRef.current?.resetAfterIndex(0);
+  }, [rows]);
+
+  // Track container size (react-window needs pixel dimensions)
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () => {
+      setDimensions({ width: el.offsetWidth, height: el.offsetHeight });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const getItemSize = useCallback((index) => {
+    if (rows[index].type === 'header') {
+      return index === 0 ? FIRST_HEADER_ROW_HEIGHT : HEADER_ROW_HEIGHT;
+    }
+    return PHOTO_ROW_HEIGHT;
+  }, [rows]);
+
+  const getItemKey = useCallback((index, data) => {
+    const row = data.rows[index];
+    return row.type === 'header' ? `h:${row.label}` : row.photo.id;
+  }, []);
 
   // Stable callback
   const handleSelect = useCallback((photo) => {
     onPhotoSelect(photo);
   }, [onPhotoSelect]);
+
+  const itemData = useMemo(() => ({
+    rows,
+    selectedId: selectedPhoto?.id,
+    onSelect: handleSelect,
+    onOpenLightbox
+  }), [rows, selectedPhoto?.id, handleSelect, onOpenLightbox]);
 
   return (
     <div className="list-view">
@@ -113,29 +185,23 @@ function ListView({ photos, selectedPhoto, onPhotoSelect, onOpenLightbox }) {
         </h2>
         <span className="photo-count">{photos.length} items</span>
       </div>
-      
-      <div className="list-content">
-        {Object.entries(groupedPhotos).map(([yearMonth, monthPhotos]) => (
-          <div key={yearMonth} className="list-group">
-            <div className="group-header">
-              <h3>{yearMonth}</h3>
-              <span className="group-count">{monthPhotos.length}</span>
-            </div>
-            
-            <div className="photo-list">
-              {monthPhotos.map((photo, index) => (
-                <ListItem
-                  key={photo.id}
-                  photo={photo}
-                  isSelected={selectedPhoto?.id === photo.id}
-                  index={index}
-                  onSelect={handleSelect}
-                  onOpenLightbox={onOpenLightbox}
-                />
-              ))}
-            </div>
-          </div>
-        ))}
+
+      <div className="list-content" ref={containerRef}>
+        {dimensions.height > 0 && (
+          <List
+            ref={listRef}
+            height={dimensions.height}
+            width={dimensions.width}
+            itemCount={rows.length}
+            itemSize={getItemSize}
+            itemData={itemData}
+            itemKey={getItemKey}
+            overscanCount={6}
+            className="list-virtual"
+          >
+            {ListRow}
+          </List>
+        )}
       </div>
     </div>
   );

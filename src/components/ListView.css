@@ -40,20 +40,25 @@
 
 .list-content {
   flex: 1;
-  overflow-y: auto;
-  padding: 20px;
+  overflow: hidden; /* react-window owns scrolling */
 }
 
-/* Group */
-.list-group {
-  margin-bottom: 28px;
+/* Virtualized rows (react-window positions them absolutely) */
+.list-row {
+  padding: 0 20px;
+}
+
+.list-row-header {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding-bottom: 14px;
 }
 
 .group-header {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 14px;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--border-color);
 }
@@ -75,35 +80,17 @@
 }
 
 /* Photo List */
-.photo-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
 .list-item {
   display: flex;
   align-items: center;
   gap: 14px;
+  height: 76px; /* fixed: rows are virtualized, height must not be content-driven */
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: 10px;
   padding: 10px;
   cursor: pointer;
   transition: all 0.25s ease;
-  animation: slideIn 0.3s ease forwards;
-  opacity: 0;
-}
-
-@keyframes slideIn {
-  from {
-    opacity: 0;
-    transform: translateX(-16px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
 }
 
 .list-item:hover {
@@ -174,7 +161,8 @@
 
 .list-item-meta {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap; /* fixed row height: wrapping would overflow the row */
+  overflow: hidden;
   gap: 14px;
   margin-bottom: 6px;
 }
@@ -187,6 +175,9 @@
   font-family: 'IBM Plex Mono', monospace;
   font-size: 11px;
   color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .meta-date svg,
