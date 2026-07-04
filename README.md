@@ -50,7 +50,7 @@ The output is written to `release/WhenWhere Setup <version>.exe`.
 
 ## Prerequisites (development)
 
-- Node.js 18+
+- Node.js 24+ (Active LTS)
 - npm
 
 ## Quick Start (development)

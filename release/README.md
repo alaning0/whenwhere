@@ -62,7 +62,7 @@ Photos with GPS show on the map; all dated media appear on the timeline, list, a
 
 ## Building this installer
 
-From the repo root (requires Node.js 18+):
+From the repo root (requires Node.js 24+):
 
 ```bash
 npm install

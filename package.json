@@ -4,6 +4,9 @@
   "private": true,
   "description": "Visualize photos on maps and timelines",
   "author": "WhenWhere",
+  "engines": {
+    "node": ">=24"
+  },
   "main": "electron/main.js",
   "dependencies": {
     "cors": "^2.8.6",

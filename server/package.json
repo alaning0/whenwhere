@@ -4,6 +4,9 @@
   "description": "Backend server for WhenWhere - visualize photos on maps and timelines using EXIF data",
   "main": "index.js",
   "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js"
