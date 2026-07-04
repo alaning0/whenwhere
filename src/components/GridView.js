@@ -1,5 +1,6 @@
 import React, { useMemo, useCallback, memo, useRef, useEffect, useState } from 'react';
 import { FixedSizeGrid as Grid } from 'react-window';
+import { API_URL } from '../config';
 import './GridView.css';
 
 // Debounce helper
@@ -10,8 +11,6 @@ function debounce(fn, delay) {
     timeoutId = setTimeout(() => fn(...args), delay);
   };
 }
-
-const API_URL = 'http://localhost:3002';
 
 // Grid item dimensions
 const ITEM_WIDTH = 160;
@@ -134,20 +133,17 @@ function GridView({ photos, selectedPhoto, onPhotoSelect, onOpenLightbox }) {
     onOpenLightbox
   }), [photos, columns, selectedPhoto?.id, onPhotoSelect, onOpenLightbox]);
 
-  // Handle resize
+  // Track container size (ResizeObserver also catches non-window resizes)
   useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
     const updateDimensions = () => {
-      if (containerRef.current) {
-        setDimensions({
-          width: containerRef.current.offsetWidth,
-          height: containerRef.current.offsetHeight
-        });
-      }
+      setDimensions({ width: el.offsetWidth, height: el.offsetHeight });
     };
-
     updateDimensions();
-    window.addEventListener('resize', updateDimensions);
-    return () => window.removeEventListener('resize', updateDimensions);
+    const observer = new ResizeObserver(updateDimensions);
+    observer.observe(el);
+    return () => observer.disconnect();
   }, []);
 
   // Build ID->index map for O(1) lookups

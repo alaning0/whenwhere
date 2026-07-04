@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { API_URL } from '../config';
 import './ScanProgress.css';
-
-const API_URL = 'http://localhost:3002';
 
 const phaseLabels = {
   idle: 'Connecting to server...',
@@ -13,13 +12,13 @@ const phaseLabels = {
   complete: 'Ready!'
 };
 
-function ScanProgress({ onComplete, onReady }) {
+function ScanProgress({ onReady }) {
   const [progress, setProgress] = useState({ current: 0, total: 0, phase: 'idle', scanning: false });
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
     const eventSource = new EventSource(`${API_URL}/api/scan/progress`);
-    
+
     eventSource.onopen = () => {
       setConnected(true);
       // Signal that we're ready to start fetching - SSE is connected
@@ -28,27 +27,22 @@ function ScanProgress({ onComplete, onReady }) {
         setTimeout(() => onReady(), 100);
       }
     };
-    
+
     eventSource.onmessage = (event) => {
       const data = JSON.parse(event.data);
       setProgress(data);
-      
-      // Notify parent when complete
-      if (data.phase === 'complete' && onComplete) {
-        onComplete();
-      }
     };
-    
+
     eventSource.onerror = () => {
       setConnected(false);
       // If SSE fails, still allow loading to proceed
       if (onReady) onReady();
     };
-    
+
     return () => {
       eventSource.close();
     };
-  }, [onComplete, onReady]);
+  }, [onReady]);
 
   const percentage = progress.total > 0 
     ? Math.round((progress.current / progress.total) * 100) 

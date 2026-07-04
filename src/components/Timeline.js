@@ -29,11 +29,6 @@ const TimelineItemRenderer = memo(function TimelineItemRenderer({ index, style, 
   const isFirstOfDay = firstOfDayIndices.has(index);
   
   const handleClick = useCallback(() => {
-    const sortDate = new Date(photo.date);
-    console.log(`Selected photo: ${photo.filename}`);
-    console.log(`  Raw date string: ${photo.date}`);
-    console.log(`  Parsed for sorting: ${sortDate.toISOString()} (timestamp: ${sortDate.getTime()})`);
-    console.log(`  Formatted display: ${photo.dateFormatted} ${photo.timeFormatted}`);
     onSelect(photo);
   }, [photo, onSelect]);
   
@@ -185,15 +180,15 @@ function Timeline({ photos, selectedPhoto, onPhotoSelect, pinMode, onPinModeChan
   const [containerWidth, setContainerWidth] = useState(800);
   
   useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
     const updateWidth = () => {
-      if (containerRef.current) {
-        setContainerWidth(containerRef.current.offsetWidth);
-      }
+      setContainerWidth(el.offsetWidth);
     };
-    
     updateWidth();
-    window.addEventListener('resize', updateWidth);
-    return () => window.removeEventListener('resize', updateWidth);
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(el);
+    return () => observer.disconnect();
   }, []);
 
   // Scroll the timeline left/right

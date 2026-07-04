@@ -165,20 +165,6 @@ export async function getCacheMetadata() {
 }
 
 /**
- * Check if cache is valid (not too old)
- * Cache expires after 24 hours
- */
-export async function isCacheValid() {
-  const meta = await getCacheMetadata();
-  if (!meta) return false;
-
-  const ONE_DAY = 24 * 60 * 60 * 1000;
-  const age = Date.now() - meta.timestamp;
-  
-  return age < ONE_DAY;
-}
-
-/**
  * Clear the cache
  */
 export async function clearCache() {

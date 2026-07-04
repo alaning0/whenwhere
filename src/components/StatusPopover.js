@@ -141,7 +141,7 @@ function StatusPopover() {
                 <div className="stats-grid">
                   <div className="stat-item">
                     <span className="stat-value">{status.totalPhotos}</span>
-                    <span className="stat-label">Total XMP Files</span>
+                    <span className="stat-label">Total Photos</span>
                   </div>
                   <div className="stat-item">
                     <span className="stat-value">{status.totalImages}</span>

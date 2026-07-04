@@ -450,8 +450,8 @@ function MapView({ photos, selectedPhoto, onPhotoSelect, pinMode, onOpenLightbox
       }
     });
     
-    // Sort by date
-    clusterPhotoList.sort((a, b) => new Date(a.date) - new Date(b.date));
+    // Sort by date (ISO strings — lexicographic == chronological)
+    clusterPhotoList.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
     
     setClusterPhotos(clusterPhotoList);
   }, [photoMap]);
