@@ -1,153 +1,170 @@
 /**
  * EXIF Adapter - Reads GPS and date metadata directly from image EXIF data
- * 
+ *
  * Expected file structure:
  *   Photos/
  *   ├── IMG_1234.HEIC          # Media file with EXIF data
  *   └── ...
- * 
+ *
  * Works with:
  *   - Apple iCloud Photos exports
  *   - Any folder containing images with EXIF metadata
  */
 
-import fs from 'fs';
+import fsp from 'fs/promises';
 import path from 'path';
 import ExifReader from 'exifreader';
 import {
   IMAGE_EXTENSIONS,
   VIDEO_EXTENSIONS,
   MEDIA_EXTENSIONS,
+  SCAN_CONCURRENCY,
   formatDates,
-  getAllFilesRecursively
+  getAllFilesRecursively,
+  comparePhotosByDate,
+  mapWithConcurrency
 } from './utils.js';
+
+// EXIF lives at the start of the file — reading the whole image is wasted I/O
+const EXIF_READ_BYTES = 128 * 1024;
 
 /**
  * Scan a directory for media files and extract EXIF metadata
  * @param {string} imagesDir - Path to the directory containing images
  * @param {number} serverPort - Port number for constructing URLs
  * @param {function} onProgress - Optional callback for progress updates: (current, total, phase) => void
+ * @param {object} options - { excludeDirs?: string[] } directories to skip (e.g. the thumbnails folder)
  * @returns {Promise<Array>} - Array of photo metadata objects
  */
-export async function scanPhotos(imagesDir, serverPort, onProgress = null) {
+export async function scanPhotos(imagesDir, serverPort, onProgress = null, options = {}) {
   console.log('EXIF Adapter: Scanning for media files...');
   console.log(`Supported image formats: ${IMAGE_EXTENSIONS.join(', ')}`);
 
   // Phase 1: Collecting files (with live progress)
   if (onProgress) onProgress(0, 0, 'scanning');
-  
+
   const files = await getAllFilesRecursively(imagesDir, (filesFound, dirsScanned) => {
     if (onProgress) onProgress(filesFound, dirsScanned, 'scanning');
-  });
+  }, options);
   console.log(`EXIF Adapter: Found ${files.length} files`);
-  
+
   // Filter for media files
   const mediaFiles = files.filter(f => {
     const ext = path.extname(f).toLowerCase();
     return MEDIA_EXTENSIONS.includes(ext);
   });
 
-  const photos = [];
-  let idCounter = 1;
   const total = mediaFiles.length;
+  let completed = 0;
 
-  // Phase 2: Processing files
+  // Phase 2: Processing files (bounded concurrency)
   if (onProgress) onProgress(0, total, 'processing');
-  
-  for (const mediaFile of mediaFiles) {
-    // Report progress every 100 files and yield every 500 to flush SSE
-    if (onProgress && idCounter % 100 === 0) {
-      onProgress(idCounter, total, 'processing');
-      if (idCounter % 500 === 0) {
-        await new Promise(resolve => setImmediate(resolve));
-      }
-    }
-    
-    const ext = path.extname(mediaFile).toLowerCase();
-    const isVideoFile = VIDEO_EXTENSIONS.includes(ext);
-    const isImageFile = IMAGE_EXTENSIONS.includes(ext);
 
-    // Extract EXIF metadata (only for images)
-    let tags;
+  const results = await mapWithConcurrency(mediaFiles, SCAN_CONCURRENCY, async (mediaFile, index) => {
+    let photo = null;
     try {
-      if (isImageFile) {
-        // Only read first 128KB - EXIF is always at start of file
-        const fd = fs.openSync(mediaFile, 'r');
-        const stats = fs.fstatSync(fd);
-        const readSize = Math.min(128 * 1024, stats.size);
-        const buffer = Buffer.alloc(readSize);
-        fs.readSync(fd, buffer, 0, readSize, 0);
-        fs.closeSync(fd);
-        
-        tags = ExifReader.load(buffer, { expanded: false });
-      } else if (isVideoFile) {
-        // Can't handle video EXIF yet
-        continue;
-      }
+      photo = await processMediaFile(mediaFile, index, serverPort);
     } catch (err) {
-      console.error(`[EXIF Adapter] Error reading EXIF for: ${mediaFile}`, err.message);
-      continue;
+      console.error(`[EXIF Adapter] Error processing ${mediaFile}:`, err.message);
     }
-
-    const latitude = parseCoordinate(tags.GPSLatitude, tags.GPSLatitudeRef);
-    const longitude = parseCoordinate(tags.GPSLongitude, tags.GPSLongitudeRef);
-    const rawDate = tags.DateTimeOriginal?.description || tags.DateTimeOriginal;
-
-    // Parse EXIF date format: "2020:11:08 12:00:17" -> ISO format
-    let dateObj;
-    if (rawDate && typeof rawDate === 'string') {
-      const exifMatch = rawDate.match(/^(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/);
-      if (exifMatch) {
-        const [, year, month, day, hour, min, sec] = exifMatch;
-        dateObj = new Date(`${year}-${month}-${day}T${hour}:${min}:${sec}`);
-      } else {
-        dateObj = new Date(rawDate);
-      }
-    } else {
-      dateObj = new Date(rawDate);
+    completed++;
+    if (onProgress && (completed % 100 === 0 || completed === total)) {
+      onProgress(completed, total, 'processing');
     }
-    
-    // Skip if date is invalid
-    if (isNaN(dateObj.getTime())) {
-      console.warn(`[EXIF Adapter] Invalid date for ${mediaFile}: ${rawDate}`);
-      continue;
-    }
-    
-    const formattedDates = formatDates(dateObj);
+    return photo;
+  });
 
-    const photo = {
-      id: idCounter++,
-      filename: mediaFile,
-      title: path.basename(mediaFile).replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '),
-      url: `http://localhost:${serverPort}/images/${encodeURIComponent(mediaFile)}`,
-      thumbnail: `http://localhost:${serverPort}/images/${encodeURIComponent(mediaFile)}?thumb=true`,
-      date: dateObj.toISOString(),
-      ...formattedDates,
-      lat: latitude,
-      lng: longitude,
-      hasLocation: latitude !== null && longitude !== null,
-      hasMediaFile: true,
-      isVideo: isVideoFile,
-      isImage: isImageFile,
-      size: fs.statSync(mediaFile).size,
-      location: latitude && longitude
-        ? `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`
-        : 'Unknown location'
-    };
-
-    photos.push(photo);
-  }
+  const photos = results.filter(Boolean);
 
   // Phase 3: Sorting
   if (onProgress) onProgress(total, total, 'sorting');
-  photos.sort((a, b) => new Date(a.date) - new Date(b.date));
+  photos.sort(comparePhotosByDate);
 
   // Phase 4: Complete
   if (onProgress) onProgress(total, total, 'complete');
-  
+
   console.log(`EXIF Adapter: Found ${photos.length} photos (${photos.filter(p => p.hasLocation).length} with GPS)`);
 
   return photos;
+}
+
+/**
+ * Build a photo object for a single media file.
+ */
+async function processMediaFile(mediaFile, index, serverPort) {
+  const ext = path.extname(mediaFile).toLowerCase();
+  const isVideoFile = VIDEO_EXTENSIONS.includes(ext);
+  const isImageFile = IMAGE_EXTENSIONS.includes(ext);
+
+  if (isVideoFile) {
+    // Can't handle video EXIF yet
+    return null;
+  }
+
+  const stats = await fsp.stat(mediaFile);
+
+  let tags;
+  try {
+    const readSize = Math.min(EXIF_READ_BYTES, stats.size);
+    const buffer = Buffer.alloc(readSize);
+    const fd = await fsp.open(mediaFile, 'r');
+    try {
+      await fd.read(buffer, 0, readSize, 0);
+    } finally {
+      await fd.close();
+    }
+    tags = ExifReader.load(buffer, { expanded: false });
+  } catch (err) {
+    console.error(`[EXIF Adapter] Error reading EXIF for: ${mediaFile}`, err.message);
+    return null;
+  }
+
+  const latitude = parseCoordinate(tags.GPSLatitude, tags.GPSLatitudeRef);
+  const longitude = parseCoordinate(tags.GPSLongitude, tags.GPSLongitudeRef);
+  const rawDate = tags.DateTimeOriginal?.description || tags.DateTimeOriginal;
+
+  // Parse EXIF date format: "2020:11:08 12:00:17" -> ISO format
+  let dateObj;
+  if (rawDate && typeof rawDate === 'string') {
+    const exifMatch = rawDate.match(/^(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/);
+    if (exifMatch) {
+      const [, year, month, day, hour, min, sec] = exifMatch;
+      dateObj = new Date(`${year}-${month}-${day}T${hour}:${min}:${sec}`);
+    } else {
+      dateObj = new Date(rawDate);
+    }
+  } else {
+    dateObj = new Date(rawDate);
+  }
+
+  // Skip if date is invalid
+  if (isNaN(dateObj.getTime())) {
+    console.warn(`[EXIF Adapter] Invalid date for ${mediaFile}: ${rawDate}`);
+    return null;
+  }
+
+  const formattedDates = formatDates(dateObj);
+  const hasLocation = latitude !== null && longitude !== null;
+
+  return {
+    id: index + 1,
+    filename: mediaFile,
+    title: path.basename(mediaFile).replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '),
+    url: `http://localhost:${serverPort}/images/${encodeURIComponent(mediaFile)}`,
+    thumbnail: `http://localhost:${serverPort}/images/${encodeURIComponent(mediaFile)}?thumb=true`,
+    date: dateObj.toISOString(),
+    ...formattedDates,
+    lat: latitude,
+    lng: longitude,
+    hasLocation,
+    hasMediaFile: true,
+    isVideo: isVideoFile,
+    isImage: isImageFile,
+    size: stats.size,
+    location: hasLocation
+      ? `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`
+      : 'Unknown location'
+  };
 }
 
 /**

@@ -1,16 +1,60 @@
 /**
  * Shared Adapter Utilities
- * 
+ *
  * Common functions and constants used across all metadata adapters.
  */
 
-import fs from 'fs';
+import fsp from 'fs/promises';
 import path from 'path';
 
 // Supported media extensions
 export const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic'];
 export const VIDEO_EXTENSIONS = ['.mov', '.mp4', '.m4v'];
 export const MEDIA_EXTENSIONS = [...IMAGE_EXTENSIONS, ...VIDEO_EXTENSIONS];
+
+// How many files each adapter processes concurrently during a scan
+export const SCAN_CONCURRENCY = 12;
+
+/**
+ * Chronological comparator for photo objects. Dates are ISO-8601 strings
+ * (lexicographic order == chronological order), with the id as a tiebreak so
+ * same-timestamp photos keep a deterministic order across parallel scans.
+ */
+export function comparePhotosByDate(a, b) {
+  if (a.date < b.date) return -1;
+  if (a.date > b.date) return 1;
+  if (a.id < b.id) return -1;
+  if (a.id > b.id) return 1;
+  return 0;
+}
+
+/**
+ * Run fn over items with bounded concurrency. Results keep item order.
+ *
+ * @param {Array} items
+ * @param {number} limit - Max concurrent fn invocations
+ * @param {function} fn - async (item, index) => result
+ * @returns {Promise<Array>} results in item order
+ */
+export async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+
+  const worker = async () => {
+    while (true) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index], index);
+    }
+  };
+
+  const workers = Array(Math.max(1, Math.min(limit, items.length)))
+    .fill(null)
+    .map(() => worker());
+  await Promise.all(workers);
+
+  return results;
+}
 
 /**
  * Format date strings for the frontend
@@ -45,96 +89,116 @@ export function formatDates(dateObj) {
 /**
  * Get file stats for date fallback
  * @param {string} filePath - Path to the file
- * @returns {Date} File creation or modification date
+ * @returns {Promise<Date>} File creation or modification date
  */
-export function getFileDate(filePath) {
+export async function getFileDate(filePath) {
   try {
-    const stats = fs.statSync(filePath);
+    const stats = await fsp.stat(filePath);
     return stats.birthtime || stats.mtime;
   } catch {
     return new Date();
   }
 }
 
+/** Path key for exclusion checks — Windows paths compare case-insensitively. */
+function normalizeDirKey(p) {
+  const resolved = path.resolve(p);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
 /**
- * Recursively collect all file paths within a directory (async version)
- * Uses setImmediate to yield to event loop, allowing SSE updates to flush
- * 
+ * Recursively collect all file paths within a directory.
+ * Skips hidden/system directories (dot-prefixed) and any directory listed in
+ * options.excludeDirs — in particular the thumbnails folder, which defaults to
+ * `<imagesDir>/.thumbnails` and would otherwise be rescanned as photos.
+ *
  * @param {string} dir - Directory to scan
  * @param {function} onProgress - Optional callback: (filesFound, dirsScanned) => void
+ * @param {object} options - { excludeDirs?: string[] }
  * @param {object} state - Internal state tracker (do not pass manually)
  * @returns {Promise<string[]>} Array of absolute file paths
  */
-export async function getAllFilesRecursively(dir, onProgress = null, state = null) {
-  // Initialize state on first call
+export async function getAllFilesRecursively(dir, onProgress = null, options = {}, state = null) {
   if (state === null) {
-    state = { filesFound: 0, dirsScanned: 0, lastReport: Date.now() };
+    state = {
+      filesFound: 0,
+      dirsScanned: 0,
+      lastReport: Date.now(),
+      excludeDirs: new Set((options.excludeDirs || []).filter(Boolean).map(normalizeDirKey)),
+    };
   }
-  
-  let allFiles = [];
-  
+
+  const allFiles = [];
+
+  let entries;
   try {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    state.dirsScanned++;
-    
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        const subFiles = await getAllFilesRecursively(fullPath, onProgress, state);
-        allFiles = allFiles.concat(subFiles);
-      } else {
-        allFiles.push(fullPath);
-        state.filesFound++;
-        
-        // Report progress every 300ms AND yield to event loop so SSE can flush
-        if (onProgress) {
-          const now = Date.now();
-          if (now - state.lastReport > 300) {
-            onProgress(state.filesFound, state.dirsScanned);
-            state.lastReport = now;
-            // Yield immediately after reporting so SSE buffer flushes
-            await new Promise(resolve => setImmediate(resolve));
-          }
+    entries = await fsp.readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    console.error(`Error reading directory ${dir}:`, err.message);
+    return allFiles;
+  }
+  state.dirsScanned++;
+
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name.startsWith('.') || state.excludeDirs.has(normalizeDirKey(fullPath))) {
+        continue;
+      }
+      const subFiles = await getAllFilesRecursively(fullPath, onProgress, options, state);
+      for (const f of subFiles) {
+        allFiles.push(f);
+      }
+    } else {
+      allFiles.push(fullPath);
+      state.filesFound++;
+
+      if (onProgress) {
+        const now = Date.now();
+        if (now - state.lastReport > 300) {
+          onProgress(state.filesFound, state.dirsScanned);
+          state.lastReport = now;
         }
       }
     }
-  } catch (err) {
-    console.error(`Error reading directory ${dir}:`, err.message);
   }
-  
+
   return allFiles;
+}
+
+/**
+ * Build a lookup index for media files: lowercase name -> actual name.
+ * Build once per scan and pass to findMediaFile — the previous per-sidecar
+ * linear search was O(n²) across the library.
+ */
+export function buildMediaFileIndex(mediaFiles) {
+  const index = new Map();
+  for (const file of mediaFiles) {
+    const key = file.toLowerCase();
+    if (!index.has(key)) {
+      index.set(key, file);
+    }
+  }
+  return index;
 }
 
 /**
  * Find the media file for a sidecar/metadata file
  * Handles both XMP (.xmp) and Google Takeout (.json) naming conventions
- * 
+ *
  * @param {string} sidecarFilename - Name of the sidecar file (e.g., "IMG_1234.HEIC.xmp")
- * @param {string[]} mediaFiles - List of media files to search
+ * @param {Map<string,string>} mediaIndex - From buildMediaFileIndex()
  * @param {string} extension - Extension to strip (e.g., '.xmp' or '.json')
  * @returns {string|null} Media filename or null if not found
  */
-export function findMediaFile(sidecarFilename, mediaFiles, extension = '.xmp') {
+export function findMediaFile(sidecarFilename, mediaIndex, extension = '.xmp') {
   // Remove extension to get the base media filename
   let mediaFilename = sidecarFilename.replace(new RegExp(`${extension}$`, 'i'), '');
-  
+
   // Handle Google Photos supplemental metadata naming
   mediaFilename = mediaFilename.replace('.supplemental-metadata', '');
 
-  // Check if the exact file exists
-  if (mediaFiles.includes(mediaFilename)) {
-    return mediaFilename;
-  }
-
-  // Try case-insensitive match
-  const lowerMedia = mediaFilename.toLowerCase();
-  for (const file of mediaFiles) {
-    if (file.toLowerCase() === lowerMedia) {
-      return file;
-    }
-  }
-
-  return null;
+  return mediaIndex.get(mediaFilename.toLowerCase()) || null;
 }
 
 /**

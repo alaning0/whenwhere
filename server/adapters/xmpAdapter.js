@@ -1,28 +1,32 @@
 /**
  * XMP Adapter - Reads metadata from XMP sidecar files (osxphotos export)
- * 
+ *
  * Expected file structure:
  *   Content/
  *   ├── IMG_1234.HEIC          # Media file
  *   ├── IMG_1234.HEIC.xmp      # XMP sidecar with GPS/date metadata
  *   └── ...
- * 
+ *
  * XMP files are named: {mediafile}.xmp (e.g., IMG_1234.HEIC.xmp)
- * 
+ *
  * Works with:
  *   - osxphotos exports with --sidecar xmp flag
  *   - Any XMP sidecar files following this naming convention
  */
 
-import fs from 'fs';
+import fsp from 'fs/promises';
 import path from 'path';
 import {
   IMAGE_EXTENSIONS,
   VIDEO_EXTENSIONS,
   MEDIA_EXTENSIONS,
+  SCAN_CONCURRENCY,
   formatDates,
   getFileDate,
-  findMediaFile
+  buildMediaFileIndex,
+  findMediaFile,
+  comparePhotosByDate,
+  mapWithConcurrency
 } from './utils.js';
 
 /**
@@ -30,105 +34,124 @@ import {
  * @param {string} imagesDir - Path to the directory containing images and XMP files
  * @param {number} serverPort - Port number for constructing URLs
  * @param {function} onProgress - Optional callback for progress updates: (current, total, phase) => void
+ * @param {object} options - Reserved for walker options (unused: this adapter scans a flat directory)
  * @returns {Promise<Array>} - Array of photo metadata objects
  */
-export async function scanPhotos(imagesDir, serverPort, onProgress = null) {
+export async function scanPhotos(imagesDir, serverPort, onProgress = null, options = {}) {
   console.log('XMP Adapter: Scanning for XMP sidecars...');
 
   // Phase 1: Collecting files
   if (onProgress) onProgress(0, 0, 'collecting');
-  
-  const files = fs.readdirSync(imagesDir);
+
+  const files = await fsp.readdir(imagesDir);
   const xmpFiles = files.filter(f => f.toLowerCase().endsWith('.xmp'));
   const mediaFiles = files.filter(f => {
     const ext = path.extname(f).toLowerCase();
     return MEDIA_EXTENSIONS.includes(ext);
   });
+  const mediaIndex = buildMediaFileIndex(mediaFiles);
 
-  const photos = [];
-  let idCounter = 1;
   const total = xmpFiles.length;
+  let completed = 0;
 
-  // Phase 2: Processing files
+  // Phase 2: Processing files (bounded concurrency)
   if (onProgress) onProgress(0, total, 'processing');
-  
-  for (const xmpFile of xmpFiles) {
-    if (onProgress && idCounter % 100 === 0) {
-      onProgress(idCounter, total, 'processing');
+
+  const results = await mapWithConcurrency(xmpFiles, SCAN_CONCURRENCY, async (xmpFile, index) => {
+    let photo = null;
+    try {
+      photo = await processXmpFile(imagesDir, xmpFile, index, mediaIndex, serverPort);
+    } catch (err) {
+      console.error(`[XMP Adapter] Error processing ${xmpFile}:`, err.message);
     }
-    
-    const xmpPath = path.join(imagesDir, xmpFile);
-    const mediaFile = findMediaFile(xmpFile, mediaFiles, '.xmp');
-    const xmpData = extractXmpData(xmpPath);
-
-    const hasMediaFile = mediaFile !== null;
-    const displayFilename = mediaFile || xmpFile.replace(/\.xmp$/i, '');
-    const mediaPath = hasMediaFile ? path.join(imagesDir, mediaFile) : null;
-
-    const ext = path.extname(displayFilename).toLowerCase();
-    const isVideo = VIDEO_EXTENSIONS.includes(ext);
-    const isImage = IMAGE_EXTENSIONS.includes(ext);
-
-    // Use XMP date when valid; fall back to the file date. An unparseable XMP
-    // date must not throw — one bad sidecar used to kill the whole scan.
-    let photoDate = null;
-    if (xmpData.date) {
-      const parsed = new Date(xmpData.date);
-      if (!isNaN(parsed.getTime())) {
-        photoDate = parsed.toISOString();
-      }
+    completed++;
+    if (onProgress && (completed % 100 === 0 || completed === total)) {
+      onProgress(completed, total, 'processing');
     }
-    if (!photoDate) {
-      photoDate = getFileDate(mediaPath || xmpPath).toISOString();
-    }
+    return photo;
+  });
 
-    const dateObj = new Date(photoDate);
-    const formattedDates = formatDates(dateObj);
-
-    const photo = {
-      id: idCounter++,
-      filename: displayFilename,
-      title: displayFilename.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '),
-      url: hasMediaFile ? `http://localhost:${serverPort}/images/${encodeURIComponent(mediaFile)}` : null,
-      thumbnail: hasMediaFile ? `http://localhost:${serverPort}/images/${encodeURIComponent(mediaFile)}?thumb=true` : null,
-      date: photoDate,
-      ...formattedDates,
-      lat: xmpData.lat,
-      lng: xmpData.lng,
-      hasLocation: xmpData.lat !== null && xmpData.lng !== null,
-      hasMediaFile,
-      isVideo,
-      isImage,
-      xmpFile,
-      size: mediaPath ? fs.statSync(mediaPath).size : 0,
-      location: xmpData.lat && xmpData.lng
-        ? `${xmpData.lat.toFixed(4)}, ${xmpData.lng.toFixed(4)}`
-        : 'Unknown location'
-    };
-
-    photos.push(photo);
-  }
+  const photos = results.filter(Boolean);
 
   // Phase 3: Sorting
   if (onProgress) onProgress(total, total, 'sorting');
-  photos.sort((a, b) => new Date(a.date) - new Date(b.date));
+  photos.sort(comparePhotosByDate);
 
   // Phase 4: Complete
   if (onProgress) onProgress(total, total, 'complete');
-  
+
   console.log(`XMP Adapter: Found ${photos.length} photos (${photos.filter(p => p.hasLocation).length} with GPS, ${photos.filter(p => p.hasMediaFile).length} with media files)`);
 
   return photos;
 }
 
 /**
+ * Build a photo object for a single XMP sidecar.
+ */
+async function processXmpFile(imagesDir, xmpFile, index, mediaIndex, serverPort) {
+  const xmpPath = path.join(imagesDir, xmpFile);
+  const mediaFile = findMediaFile(xmpFile, mediaIndex, '.xmp');
+  const xmpData = await extractXmpData(xmpPath);
+
+  const hasMediaFile = mediaFile !== null;
+  const displayFilename = mediaFile || xmpFile.replace(/\.xmp$/i, '');
+  const mediaPath = hasMediaFile ? path.join(imagesDir, mediaFile) : null;
+
+  const ext = path.extname(displayFilename).toLowerCase();
+  const isVideo = VIDEO_EXTENSIONS.includes(ext);
+  const isImage = IMAGE_EXTENSIONS.includes(ext);
+
+  // Use XMP date when valid; fall back to the file date. An unparseable XMP
+  // date must not throw — one bad sidecar used to kill the whole scan.
+  let dateObj = null;
+  if (xmpData.date) {
+    const parsed = new Date(xmpData.date);
+    if (!isNaN(parsed.getTime())) {
+      dateObj = parsed;
+    }
+  }
+  if (!dateObj) {
+    dateObj = await getFileDate(mediaPath || xmpPath);
+  }
+
+  const formattedDates = formatDates(dateObj);
+  const hasLocation = xmpData.lat !== null && xmpData.lng !== null;
+
+  let size = 0;
+  if (mediaPath) {
+    size = await fsp.stat(mediaPath).then(s => s.size).catch(() => 0);
+  }
+
+  return {
+    id: index + 1,
+    filename: displayFilename,
+    title: displayFilename.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '),
+    url: hasMediaFile ? `http://localhost:${serverPort}/images/${encodeURIComponent(mediaFile)}` : null,
+    thumbnail: hasMediaFile ? `http://localhost:${serverPort}/images/${encodeURIComponent(mediaFile)}?thumb=true` : null,
+    date: dateObj.toISOString(),
+    ...formattedDates,
+    lat: xmpData.lat,
+    lng: xmpData.lng,
+    hasLocation,
+    hasMediaFile,
+    isVideo,
+    isImage,
+    xmpFile,
+    size,
+    location: hasLocation
+      ? `${xmpData.lat.toFixed(4)}, ${xmpData.lng.toFixed(4)}`
+      : 'Unknown location'
+  };
+}
+
+/**
  * Extract metadata from XMP sidecar file
  * @param {string} xmpPath - Full path to XMP file
- * @returns {{ lat: number|null, lng: number|null, date: string|null }}
+ * @returns {Promise<{ lat: number|null, lng: number|null, date: string|null }>}
  */
-function extractXmpData(xmpPath) {
+async function extractXmpData(xmpPath) {
   try {
-    const content = fs.readFileSync(xmpPath, 'utf-8');
+    const content = await fsp.readFile(xmpPath, 'utf-8');
 
     let lat = null;
     let lng = null;
