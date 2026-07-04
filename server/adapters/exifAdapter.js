@@ -21,6 +21,7 @@ import {
   SCAN_CONCURRENCY,
   formatDates,
   getAllFilesRecursively,
+  makePhotoId,
   comparePhotosByDate,
   mapWithConcurrency
 } from './utils.js';
@@ -60,10 +61,10 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
   // Phase 2: Processing files (bounded concurrency)
   if (onProgress) onProgress(0, total, 'processing');
 
-  const results = await mapWithConcurrency(mediaFiles, SCAN_CONCURRENCY, async (mediaFile, index) => {
+  const results = await mapWithConcurrency(mediaFiles, SCAN_CONCURRENCY, async (mediaFile) => {
     let photo = null;
     try {
-      photo = await processMediaFile(mediaFile, index, serverPort);
+      photo = await processMediaFile(mediaFile, serverPort);
     } catch (err) {
       console.error(`[EXIF Adapter] Error processing ${mediaFile}:`, err.message);
     }
@@ -91,7 +92,7 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
 /**
  * Build a photo object for a single media file.
  */
-async function processMediaFile(mediaFile, index, serverPort) {
+async function processMediaFile(mediaFile, serverPort) {
   const ext = path.extname(mediaFile).toLowerCase();
   const isVideoFile = VIDEO_EXTENSIONS.includes(ext);
   const isImageFile = IMAGE_EXTENSIONS.includes(ext);
@@ -147,7 +148,7 @@ async function processMediaFile(mediaFile, index, serverPort) {
   const hasLocation = latitude !== null && longitude !== null;
 
   return {
-    id: index + 1,
+    id: makePhotoId(mediaFile),
     filename: mediaFile,
     title: path.basename(mediaFile).replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '),
     url: `http://localhost:${serverPort}/images/${encodeURIComponent(mediaFile)}`,

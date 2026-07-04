@@ -6,6 +6,7 @@
 
 import fsp from 'fs/promises';
 import path from 'path';
+import crypto from 'crypto';
 
 // Supported media extensions
 export const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic'];
@@ -14,6 +15,20 @@ export const MEDIA_EXTENSIONS = [...IMAGE_EXTENSIONS, ...VIDEO_EXTENSIONS];
 
 // How many files each adapter processes concurrently during a scan
 export const SCAN_CONCURRENCY = 12;
+
+/**
+ * Stable photo id derived from the adapter's unique iteration key.
+ * Must be the per-record unique path (media path, .xmp path, .json path) —
+ * NOT the resolved media filename, which can collide across sidecars.
+ * 12 hex chars (48 bits) keeps collision odds negligible at library scale;
+ * shorter would risk duplicate IndexedDB keys on large libraries.
+ *
+ * @param {string} key - Unique path for this record
+ * @returns {string} 12-char hex id, stable across rescans
+ */
+export function makePhotoId(key) {
+  return crypto.createHash('md5').update(String(key)).digest('hex').slice(0, 12);
+}
 
 /**
  * Chronological comparator for photo objects. Dates are ISO-8601 strings

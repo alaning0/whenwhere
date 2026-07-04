@@ -4,7 +4,8 @@
  */
 
 const DB_NAME = 'whenwhere-cache';
-const DB_VERSION = 1;
+// v2: photo ids changed from positional numbers to stable strings
+const DB_VERSION = 2;
 const PHOTOS_STORE = 'photos';
 const META_STORE = 'metadata';
 
@@ -41,6 +42,13 @@ export async function initDB() {
       if (!database.objectStoreNames.contains(META_STORE)) {
         database.createObjectStore(META_STORE, { keyPath: 'key' });
       }
+
+      // v1 -> v2: drop cached data with old numeric ids
+      if (event.oldVersion > 0 && event.oldVersion < 2) {
+        const transaction = event.target.transaction;
+        transaction.objectStore(PHOTOS_STORE).clear();
+        transaction.objectStore(META_STORE).clear();
+      }
     };
   });
 }
@@ -61,9 +69,16 @@ export async function getCachedPhotos() {
       request.onsuccess = () => {
         const photos = request.result;
         if (photos && photos.length > 0) {
-          // IndexedDB returns records in primary key (id) order, not insertion order
-          // Re-sort by date to maintain correct chronological order
-          photos.sort((a, b) => new Date(a.date) - new Date(b.date));
+          // IndexedDB returns records in primary key (id) order, not insertion order.
+          // Re-sort by date (ISO strings — lexicographic == chronological),
+          // with the id as a tiebreak to match the server's ordering.
+          photos.sort((a, b) => {
+            if (a.date < b.date) return -1;
+            if (a.date > b.date) return 1;
+            if (a.id < b.id) return -1;
+            if (a.id > b.id) return 1;
+            return 0;
+          });
           resolve(photos);
         } else {
           resolve(null);

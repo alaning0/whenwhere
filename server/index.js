@@ -607,7 +607,7 @@ app.get('/api/photos/:id', asyncHandler(async (req, res) => {
     }
 
     const photos = await scanImages();
-    const photo = photos.find(p => p.id === parseInt(req.params.id));
+    const photo = photos.find(p => p.id === req.params.id);
 
     if (!photo) {
       return res.status(404).json({ error: 'Photo not found' });

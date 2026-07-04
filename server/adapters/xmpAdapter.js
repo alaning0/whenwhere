@@ -25,6 +25,7 @@ import {
   getFileDate,
   buildMediaFileIndex,
   findMediaFile,
+  makePhotoId,
   comparePhotosByDate,
   mapWithConcurrency
 } from './utils.js';
@@ -57,10 +58,10 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
   // Phase 2: Processing files (bounded concurrency)
   if (onProgress) onProgress(0, total, 'processing');
 
-  const results = await mapWithConcurrency(xmpFiles, SCAN_CONCURRENCY, async (xmpFile, index) => {
+  const results = await mapWithConcurrency(xmpFiles, SCAN_CONCURRENCY, async (xmpFile) => {
     let photo = null;
     try {
-      photo = await processXmpFile(imagesDir, xmpFile, index, mediaIndex, serverPort);
+      photo = await processXmpFile(imagesDir, xmpFile, mediaIndex, serverPort);
     } catch (err) {
       console.error(`[XMP Adapter] Error processing ${xmpFile}:`, err.message);
     }
@@ -88,7 +89,7 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
 /**
  * Build a photo object for a single XMP sidecar.
  */
-async function processXmpFile(imagesDir, xmpFile, index, mediaIndex, serverPort) {
+async function processXmpFile(imagesDir, xmpFile, mediaIndex, serverPort) {
   const xmpPath = path.join(imagesDir, xmpFile);
   const mediaFile = findMediaFile(xmpFile, mediaIndex, '.xmp');
   const xmpData = await extractXmpData(xmpPath);
@@ -123,7 +124,7 @@ async function processXmpFile(imagesDir, xmpFile, index, mediaIndex, serverPort)
   }
 
   return {
-    id: index + 1,
+    id: makePhotoId(xmpPath),
     filename: displayFilename,
     title: displayFilename.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '),
     url: hasMediaFile ? `http://localhost:${serverPort}/images/${encodeURIComponent(mediaFile)}` : null,

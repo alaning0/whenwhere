@@ -28,6 +28,7 @@ import {
   buildMediaFileIndex,
   findMediaFile,
   getAllFilesRecursively,
+  makePhotoId,
   comparePhotosByDate,
   mapWithConcurrency
 } from './utils.js';
@@ -64,10 +65,10 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
   // Phase 2: Processing files (bounded concurrency)
   if (onProgress) onProgress(0, total, 'processing');
 
-  const results = await mapWithConcurrency(jsonFiles, SCAN_CONCURRENCY, async (jsonFile, index) => {
+  const results = await mapWithConcurrency(jsonFiles, SCAN_CONCURRENCY, async (jsonFile) => {
     let photo = null;
     try {
-      photo = await processJsonFile(jsonFile, index, mediaIndex, serverPort);
+      photo = await processJsonFile(jsonFile, mediaIndex, serverPort);
     } catch (err) {
       console.error(`[Takeout Adapter] Error processing ${jsonFile}:`, err.message);
     }
@@ -95,7 +96,7 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
 /**
  * Build a photo object for a single Takeout JSON sidecar.
  */
-async function processJsonFile(jsonFile, index, mediaIndex, serverPort) {
+async function processJsonFile(jsonFile, mediaIndex, serverPort) {
   const jsonData = await extractJsonData(jsonFile);
 
   const mediaFile = findMediaFile(jsonFile, mediaIndex, '.json');
@@ -126,7 +127,7 @@ async function processJsonFile(jsonFile, index, mediaIndex, serverPort) {
   }
 
   return {
-    id: index + 1,
+    id: makePhotoId(jsonFile),
     filename: displayFilename,
     title: path.basename(displayFilename).replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '),
     url: hasMediaFile ? `http://localhost:${serverPort}/images/${encodeURIComponent(mediaFile)}` : null,
