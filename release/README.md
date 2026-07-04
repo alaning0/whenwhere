@@ -2,7 +2,9 @@
 
 Pre-built installer for WhenWhere. No Node.js or developer tools required.
 
-## Download
+**Preferred download:** the latest build on [GitHub Releases](https://github.com/alaning0/whenwhere/releases). Maintainers publish those by pushing a `v*` tag — see [CONTRIBUTING.md](../CONTRIBUTING.md).
+
+## Download (this folder)
 
 | File | Description |
 |------|-------------|
@@ -62,7 +64,7 @@ Photos with GPS show on the map; all dated media appear on the timeline, list, a
 
 ## Building this installer
 
-From the repo root (requires Node.js 24+):
+Local build (requires Node.js 24+):
 
 ```bash
 npm install
@@ -72,7 +74,7 @@ npm run dist:win
 
 Output:
 
-- `release/WhenWhere Setup <version>.exe` — installer (committed via Git LFS)
+- `release/WhenWhere Setup <version>.exe` — installer
 - `release/win-unpacked/` — local unpacked build (not committed)
 
-See the [main README](../README.md) for development setup and architecture.
+To publish a GitHub Release (tag push → CI), see [CONTRIBUTING.md](../CONTRIBUTING.md). Development setup is in the [main README](../README.md).

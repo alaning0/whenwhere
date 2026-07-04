@@ -6,9 +6,9 @@ Visualize your photos on interactive maps and timelines using GPS metadata from 
 
 ## Install (Windows)
 
-Download and run the installer from this repo:
+Download the latest installer from **[GitHub Releases](https://github.com/alaning0/whenwhere/releases)** (recommended).
 
-**[release/WhenWhere Setup 1.0.0.exe](release/WhenWhere%20Setup%201.0.0.exe)**
+A copy may also be present under [`release/`](release/) in this repo (Git LFS).
 
 1. Double-click the installer and follow the prompts
 2. Launch **WhenWhere** from the Start Menu or desktop shortcut
@@ -16,13 +16,7 @@ Download and run the installer from this repo:
 
 No Node.js install is required for the packaged app. Paths are saved under `%APPDATA%\whenwhere\`.
 
-To rebuild the installer after code changes:
-
-```bash
-npm run dist:win
-```
-
-The output is written to `release/WhenWhere Setup <version>.exe`.
+To build the installer locally or publish a new release, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Features
 
@@ -52,6 +46,8 @@ The output is written to `release/WhenWhere Setup <version>.exe`.
 
 - Node.js 24+ (Active LTS)
 - npm
+
+Development setup, local packaging, and the **tag → GitHub Release** flow are documented in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Quick Start (development)
 
