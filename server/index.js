@@ -750,19 +750,35 @@ async function startBackgroundThumbnailGeneration() {
 }
 
 /**
- * Serve packaged React build when WHENWHERE_STATIC_DIR is set.
+ * Serve packaged React build.
+ * Prefer WHENWHERE_STATIC_DIR; fall back to resources/build next to the server
+ * (packaged layout: resources/server + resources/build).
  */
+function resolveStaticDir() {
+  const candidates = [
+    process.env.WHENWHERE_STATIC_DIR,
+    path.join(__dirname, '..', 'build'),
+    path.join(__dirname, '..', '..', 'build'),
+  ].filter(Boolean);
+
+  for (const dir of candidates) {
+    const resolved = path.resolve(dir);
+    if (fs.existsSync(path.join(resolved, 'index.html'))) {
+      return resolved;
+    }
+  }
+  return null;
+}
+
 function mountStaticFrontend() {
-  const staticDir = process.env.WHENWHERE_STATIC_DIR;
-  if (!staticDir || !fs.existsSync(staticDir)) {
+  const staticDir = resolveStaticDir();
+  if (!staticDir) {
+    console.warn('⚠️  No frontend build found (set WHENWHERE_STATIC_DIR or package resources/build)');
     return;
   }
 
   app.use(express.static(staticDir));
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api') || req.path.startsWith('/images')) {
-      return next();
-    }
+  app.get(/^(?!\/api(?:\/|$)|\/images(?:\/|$)).*/, (req, res) => {
     res.sendFile(path.join(staticDir, 'index.html'));
   });
   console.log(`📦 Serving frontend from: ${staticDir}`);

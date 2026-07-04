@@ -52,7 +52,16 @@ function startBackend() {
   const env = getServerEnv();
 
   let command = 'node';
-  let args = [serverEntry];
+  const args = [serverEntry];
+
+  // Pass paths as CLI args (reliable with spaces; also used as env fallback)
+  args.push('--config-dir', app.getPath('userData'));
+  args.push('--port', String(SERVER_PORT));
+
+  const staticDir = getStaticDir();
+  if (staticDir) {
+    args.push('--static-dir', staticDir);
+  }
 
   if (!isDev) {
     const bundledNode = getBundledNodePath();
@@ -67,6 +76,7 @@ function startBackend() {
 
   serverProcess = spawn(command, args, {
     env,
+    cwd: path.dirname(serverEntry),
     stdio: 'inherit',
     windowsHide: true,
   });

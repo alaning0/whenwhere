@@ -9,6 +9,22 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 
+// Apply CLI overrides before any config is read (Electron passes these)
+for (let i = 2; i < process.argv.length; i++) {
+  const arg = process.argv[i];
+  const next = process.argv[i + 1];
+  if (arg === '--static-dir' && next) {
+    process.env.WHENWHERE_STATIC_DIR = next;
+    i++;
+  } else if (arg === '--config-dir' && next) {
+    process.env.WHENWHERE_CONFIG_DIR = next;
+    i++;
+  } else if (arg === '--port' && next) {
+    process.env.PORT = next;
+    i++;
+  }
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
