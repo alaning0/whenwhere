@@ -7,9 +7,20 @@ const fs = require('fs');
 const SERVER_PORT = process.env.PORT || '3002';
 const isDev = !app.isPackaged;
 const GITHUB_REPO_URL = 'https://github.com/alaning0/whenwhere';
+const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
 let mainWindow = null;
 let serverProcess = null;
+let updateCheckFromMenu = false;
+let updateDownloadedInfo = null;
+let autoUpdater = null;
+
+function getAutoUpdater() {
+  if (!autoUpdater) {
+    ({ autoUpdater } = require('electron-updater'));
+  }
+  return autoUpdater;
+}
 
 function showAbout() {
   const version = app.getVersion();
@@ -37,10 +48,135 @@ function showAbout() {
     });
 }
 
+function installDownloadedUpdate() {
+  stopBackend();
+  // Silent install, then relaunch the app
+  getAutoUpdater().quitAndInstall(true, true);
+}
+
+function promptToInstallUpdate(version) {
+  dialog
+    .showMessageBox(mainWindow || undefined, {
+      type: 'info',
+      title: 'Update ready',
+      message: `WhenWhere ${version} is ready to install`,
+      detail: 'The app will restart to apply the update. You do not need to download anything yourself.',
+      buttons: ['Restart now', 'Later'],
+      defaultId: 0,
+      cancelId: 1,
+    })
+    .then(({ response }) => {
+      if (response === 0) {
+        installDownloadedUpdate();
+      }
+    });
+}
+
+function setupAutoUpdater() {
+  const updater = getAutoUpdater();
+  updater.autoDownload = true;
+  updater.autoInstallOnAppQuit = true;
+
+  updater.on('update-available', (info) => {
+    console.log(`Update available: ${info.version}`);
+    if (updateCheckFromMenu && mainWindow) {
+      dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        title: 'Update available',
+        message: `WhenWhere ${info.version} is available`,
+        detail: 'Downloading in the background. You will be asked to restart when it is ready.',
+        buttons: ['OK'],
+      });
+    }
+  });
+
+  updater.on('update-not-available', () => {
+    if (updateCheckFromMenu) {
+      dialog.showMessageBox(mainWindow || undefined, {
+        type: 'info',
+        title: 'No updates',
+        message: 'You are up to date.',
+        detail: `WhenWhere ${app.getVersion()} is the latest version.`,
+        buttons: ['OK'],
+      });
+    }
+    updateCheckFromMenu = false;
+  });
+
+  updater.on('error', (err) => {
+    console.error('Auto-updater error:', err);
+    if (updateCheckFromMenu) {
+      dialog.showMessageBox(mainWindow || undefined, {
+        type: 'error',
+        title: 'Update check failed',
+        message: 'Could not check for updates.',
+        detail: err.message || String(err),
+        buttons: ['OK'],
+      });
+    }
+    updateCheckFromMenu = false;
+  });
+
+  updater.on('update-downloaded', (info) => {
+    updateDownloadedInfo = info;
+    updateCheckFromMenu = false;
+    console.log(`Update downloaded: ${info.version}`);
+    promptToInstallUpdate(info.version);
+  });
+
+  setTimeout(() => {
+    updater.checkForUpdates().catch((err) => {
+      console.error('Startup update check failed:', err);
+    });
+  }, 5000);
+
+  setInterval(() => {
+    updater.checkForUpdates().catch((err) => {
+      console.error('Scheduled update check failed:', err);
+    });
+  }, UPDATE_CHECK_INTERVAL_MS);
+}
+
+function checkForUpdatesManual() {
+  if (isDev) {
+    dialog.showMessageBox(mainWindow || undefined, {
+      type: 'info',
+      title: 'Updates',
+      message: 'Auto-update is only available in the installed app.',
+      detail: 'Install a release build to receive updates from GitHub.',
+      buttons: ['OK'],
+    });
+    return;
+  }
+
+  if (updateDownloadedInfo) {
+    promptToInstallUpdate(updateDownloadedInfo.version);
+    return;
+  }
+
+  updateCheckFromMenu = true;
+  getAutoUpdater()
+    .checkForUpdates()
+    .catch((err) => {
+      updateCheckFromMenu = false;
+      dialog.showMessageBox(mainWindow || undefined, {
+        type: 'error',
+        title: 'Update check failed',
+        message: 'Could not check for updates.',
+        detail: err.message || String(err),
+        buttons: ['OK'],
+      });
+    });
+}
+
 function createAppMenu() {
   const helpMenu = {
     label: 'Help',
     submenu: [
+      {
+        label: 'Check for Updates…',
+        click: () => checkForUpdatesManual(),
+      },
       {
         label: 'About WhenWhere',
         click: () => showAbout(),
@@ -272,6 +408,9 @@ ipcMain.handle('select-folder', async (_event, title) => {
 
 app.whenReady().then(async () => {
   createAppMenu();
+  if (!isDev) {
+    setupAutoUpdater();
+  }
   startBackend();
 
   try {

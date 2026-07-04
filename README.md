@@ -16,6 +16,8 @@ A copy may also be present under [`release/`](release/) in this repo (Git LFS).
 
 No Node.js install is required for the packaged app. Paths are saved under `%APPDATA%\whenwhere\`.
 
+Installed builds check [GitHub Releases](https://github.com/alaning0/whenwhere/releases) for updates and can install them in-app (**Help → Check for Updates…**).
+
 To build the installer locally or publish a new release, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Features

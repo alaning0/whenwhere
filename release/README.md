@@ -4,6 +4,8 @@ Pre-built installer for WhenWhere. No Node.js or developer tools required.
 
 **Preferred download:** the latest build on [GitHub Releases](https://github.com/alaning0/whenwhere/releases). Maintainers publish those by pushing a `v*` tag — see [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+After the first install, the app checks for updates automatically and can install them in-app (**Help → Check for Updates…**) — no need to download a new installer by hand.
+
 ## Download (this folder)
 
 Older installers may still be present here (Git LFS). Prefer the latest **GitHub Release** for the current version.

@@ -35,10 +35,16 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: whenwhere-windows-installer
-          path: release/WhenWhere Setup *.exe
+          path: |
+            release/WhenWhere Setup *.exe
+            release/WhenWhere Setup *.exe.blockmap
+            release/latest.yml
 
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
-          files: release/WhenWhere Setup *.exe
+          files: |
+            release/WhenWhere Setup *.exe
+            release/WhenWhere Setup *.exe.blockmap
+            release/latest.yml

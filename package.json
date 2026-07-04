@@ -1,9 +1,13 @@
 {
   "name": "whenwhere",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "Visualize photos on maps and timelines",
   "author": "WhenWhere",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alaning0/whenwhere.git"
+  },
   "engines": {
     "node": ">=24"
   },
@@ -11,6 +15,7 @@
   "dependencies": {
     "cors": "^2.8.6",
     "date-fns": "^3.0.0",
+    "electron-updater": "^6.8.9",
     "exifreader": "^4.38.1",
     "heic-convert": "^2.1.0",
     "leaflet": "^1.9.4",
@@ -48,7 +53,13 @@
     "appId": "com.whenwhere.app",
     "productName": "WhenWhere",
     "copyright": "Copyright © WhenWhere",
-    "publish": null,
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "alaning0",
+        "repo": "whenwhere"
+      }
+    ],
     "directories": {
       "output": "release"
     },

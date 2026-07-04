@@ -41,13 +41,18 @@ git push origin v1.0.1
 ```
 
 4. Wait for **Build Windows installer** to finish on the tag.
-5. Confirm the release at [Releases](https://github.com/alaning0/whenwhere/releases) — it should include `WhenWhere Setup <version>.exe`.
+5. Confirm the release at [Releases](https://github.com/alaning0/whenwhere/releases) — it should include:
+   - `WhenWhere Setup <version>.exe` (installer)
+   - `WhenWhere Setup <version>.exe.blockmap` (for differential updates)
+   - `latest.yml` (auto-updater feed)
+
+Installed apps check GitHub Releases on launch (and periodically) and can download/install updates in-app via **Help → Check for Updates…**.
 
 ### What each trigger does
 
 | Trigger | Result |
 |---------|--------|
-| Push tag `v*` (e.g. `v1.0.1`) | Build installer → upload Actions artifact → **create/update GitHub Release** with the `.exe` |
+| Push tag `v*` (e.g. `v1.0.1`) | Build installer → upload Actions artifact → **create/update GitHub Release** with installer + updater metadata |
 | Actions → **Run workflow** (manual) | Build installer → upload Actions artifact only (**no** Release) |
 
 Manual runs are for smoke-testing the build. Ship to users via a tag.
@@ -57,3 +62,4 @@ Manual runs are for smoke-testing the build. Ship to users via a tag.
 - electron-builder is configured with `--publish never`; publishing is handled by the workflow (`softprops/action-gh-release`), not by electron-builder.
 - The workflow needs `contents: write` so the default `GITHUB_TOKEN` can create releases.
 - Prefer linking users to [GitHub Releases](https://github.com/alaning0/whenwhere/releases) rather than committing large `.exe` files to the repo.
+- Auto-update only runs in packaged builds (`electron-updater` + GitHub provider). Dev mode (`npm run electron:dev`) does not check for updates.
