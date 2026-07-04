@@ -182,10 +182,8 @@ function getThumbnailPath(filename) {
 }
 
 async function thumbnailExists(filename) {
-  const thumbPath = getThumbnailPath(filename);
   try {
-    await fsp.access(thumbPath, fs.constants.F_OK);
-    const stats = await fsp.stat(thumbPath);
+    const stats = await fsp.stat(getThumbnailPath(filename));
     return stats.size > 0;
   } catch (e) {
     return false;
@@ -205,7 +203,108 @@ async function convertHeicBufferToJpeg(buffer) {
   }
 }
 
+// Full-size HEIC conversion costs seconds of CPU and ~50MB+ peak memory per
+// 12MP image. Convert once to disk, cap concurrency so a lightbox arrow-key
+// spree cannot stack conversions, and share in-flight jobs per output path.
+const FULL_CONVERT_CONCURRENCY = 2;
+let fullConvertActive = 0;
+const fullConvertWaiters = [];
+const inFlightFullConversions = new Map();
+
+function acquireConvertSlot() {
+  if (fullConvertActive < FULL_CONVERT_CONCURRENCY) {
+    fullConvertActive++;
+    return Promise.resolve();
+  }
+  return new Promise(resolve => fullConvertWaiters.push(resolve));
+}
+
+function releaseConvertSlot() {
+  const next = fullConvertWaiters.shift();
+  if (next) {
+    next(); // hand the slot to the next waiter
+  } else {
+    fullConvertActive--;
+  }
+}
+
+function getConvertedFullPath(filename) {
+  const hash = crypto.createHash('md5').update(filename).digest('hex').slice(0, 12);
+  return path.join(getThumbnailsDir(), 'full', `${hash}_${path.basename(filename)}.jpg`);
+}
+
+/**
+ * Return the path of a full-size JPEG conversion of the given HEIC,
+ * converting and caching it on first request. Returns null on failure so the
+ * route can fall back to serving the raw file.
+ */
+async function getConvertedHeic(sourcePath, filename) {
+  const outPath = getConvertedFullPath(filename);
+  const existing = await fsp.stat(outPath).catch(() => null);
+  if (existing && existing.size > 0) {
+    return outPath;
+  }
+
+  if (inFlightFullConversions.has(outPath)) {
+    return inFlightFullConversions.get(outPath);
+  }
+
+  const job = (async () => {
+    await acquireConvertSlot();
+    try {
+      // Another request may have finished it while we waited for a slot
+      const raced = await fsp.stat(outPath).catch(() => null);
+      if (raced && raced.size > 0) {
+        return outPath;
+      }
+      await fsp.mkdir(path.dirname(outPath), { recursive: true });
+      try {
+        await sharp(sourcePath, { failOnError: false })
+          .rotate()
+          .jpeg({ quality: 90 })
+          .toFile(outPath);
+        return outPath;
+      } catch (e) {
+        console.log(`Sharp failed for full image ${filename}, attempting heic-convert fallback...`);
+        try {
+          const buffer = await fsp.readFile(sourcePath);
+          const jpegBuffer = await convertHeicBufferToJpeg(buffer);
+          if (!jpegBuffer) {
+            console.error(`Failed to convert full HEIC ${filename}:`, e.message);
+            return null;
+          }
+          await fsp.writeFile(outPath, jpegBuffer);
+          return outPath;
+        } catch (fallbackErr) {
+          console.error(`Fallback failed for ${filename}:`, fallbackErr.message);
+          return null;
+        }
+      }
+    } finally {
+      releaseConvertSlot();
+    }
+  })().finally(() => inFlightFullConversions.delete(outPath));
+
+  inFlightFullConversions.set(outPath, job);
+  return job;
+}
+
+// Concurrent requests for the same thumbnail share one generation job —
+// two writers on the same output path would corrupt it.
+const inFlightThumbnails = new Map();
+
 async function generateThumbnail(filename) {
+  const thumbnailPath = getThumbnailPath(filename);
+  if (inFlightThumbnails.has(thumbnailPath)) {
+    return inFlightThumbnails.get(thumbnailPath);
+  }
+  const job = generateThumbnailInner(filename, thumbnailPath)
+    .finally(() => inFlightThumbnails.delete(thumbnailPath));
+  inFlightThumbnails.set(thumbnailPath, job);
+  return job;
+}
+
+async function generateThumbnailInner(filename, thumbnailPath) {
   const imagesDir = getImagesDir();
   const sourcePath = (filename.includes('/') || filename.includes('\\'))
     ? filename
@@ -214,14 +313,13 @@ async function generateThumbnail(filename) {
     console.warn(`Rejected thumbnail request outside images dir: ${filename}`);
     return null;
   }
-  const thumbnailPath = getThumbnailPath(filename);
 
-  if (await thumbnailExists(filename)) {
-    return thumbnailPath;
-  }
-
-  try {
-    await fsp.access(thumbnailPath, fs.constants.F_OK);
+  const existing = await fsp.stat(thumbnailPath).catch(() => null);
+  if (existing) {
+    if (existing.size > 0) {
+      return thumbnailPath;
+    }
+    // Zero-byte thumbnail from an interrupted write — regenerate it
     try {
       await fsp.unlink(thumbnailPath);
     } catch (e) {
@@ -230,8 +328,6 @@ async function generateThumbnail(filename) {
       }
       console.warn(`Could not delete corrupt thumbnail ${filename}:`, e.code);
     }
-  } catch (e) {
-    // Thumbnail doesn't exist
   }
 
   try {
@@ -576,29 +672,13 @@ app.get('/images/:filename', asyncHandler(async (req, res) => {
   }
 
   if (ext === '.heic') {
-    try {
-      const outputBuffer = await sharp(filePath, { failOnError: false })
-        .rotate()
-        .jpeg({ quality: 90 })
-        .toBuffer();
+    const convertedPath = await getConvertedHeic(filePath, filename);
+    if (convertedPath) {
       res.set('Content-Type', 'image/jpeg');
       res.set('Cache-Control', 'public, max-age=86400');
-      return res.send(outputBuffer);
-    } catch (e) {
-      console.log(`Sharp failed for full image ${filename}, attempting heic-convert fallback...`);
-      try {
-        const buffer = await fsp.readFile(filePath);
-        const jpegBuffer = await convertHeicBufferToJpeg(buffer);
-        if (jpegBuffer) {
-          res.set('Content-Type', 'image/jpeg');
-          res.set('Cache-Control', 'public, max-age=86400');
-          return res.send(jpegBuffer);
-        }
-      } catch (fallbackErr) {
-        console.error(`Fallback failed for ${filename}:`, fallbackErr.message);
-      }
-      console.error(`Failed to convert full HEIC ${filename}:`, e.message);
+      return res.sendFile(convertedPath);
     }
+    // Conversion failed — fall through to serving the raw HEIC
   }
 
   const contentTypes = {
@@ -682,15 +762,12 @@ async function processPriorityQueue() {
   processingPriority = true;
 
   const processNext = async () => {
-    if (priorityQueue.length === 0) return;
-
-    const filename = priorityQueue.shift();
-
-    if (!(await thumbnailExists(filename))) {
-      await generateThumbnail(filename);
+    while (priorityQueue.length > 0) {
+      const filename = priorityQueue.shift();
+      if (!(await thumbnailExists(filename))) {
+        await generateThumbnail(filename);
+      }
     }
-
-    await processNext();
   };
 
   const workers = Array(Math.min(THUMBNAIL_CONCURRENCY, priorityQueue.length))
@@ -809,10 +886,8 @@ async function startBackgroundThumbnailGeneration() {
         const photo = needsThumbnail[index++];
         if (!photo) break;
 
-        if (await thumbnailExists(photo.filename)) {
-          continue;
-        }
-
+        // generateThumbnail rechecks existence itself; the extra stat per
+        // photo here was redundant (the list is already thumbSet-filtered)
         const result = await generateThumbnail(photo.filename);
 
         if (result) {
