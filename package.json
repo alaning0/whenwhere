@@ -26,7 +26,8 @@
     "concurrently": "^8.2.2",
     "electron": "^33.2.1",
     "electron-builder": "^25.1.8",
-    "wait-on": "^8.0.1"
+    "wait-on": "^8.0.1",
+    "yaml": "^2.9.0"
   },
   "scripts": {
     "start": "concurrently --names \"server,frontend\" --prefix-colors \"blue,green\" \"npm run server\" \"npm run frontend\"",
