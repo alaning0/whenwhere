@@ -168,7 +168,7 @@ Optional development defaults via `server/.env`:
 
 ```typescript
 interface Photo {
-  id: number;              // Unique identifier
+  id: string;              // Stable unique identifier (hash of the file path)
   filename: string;        // Media filename
   title: string;           // Display title
   url: string | null;      // Full media URL
@@ -194,7 +194,7 @@ interface Photo {
 To support a new metadata source, create an adapter in `server/adapters/`:
 
 1. Copy `_template.js` as your starting point
-2. Implement `scanPhotos(imagesDir, serverPort, onProgress)`
+2. Implement `scanPhotos(imagesDir, serverPort, onProgress, options)` — forward `options.excludeDirs` to `getAllFilesRecursively` if you scan recursively
 3. Implement `getAdapterInfo()`
 4. Add your adapter to the map in `server/index.js`
 
@@ -202,12 +202,18 @@ See `server/adapters/_template.js` for full documentation.
 
 ## Performance
 
-- **Virtualized lists**: Timeline and grid use windowing for smooth scrolling
+- **Parallel scanning**: Metadata is read with bounded concurrency using async I/O
+- **Virtualized lists**: Timeline, grid, and list views use windowing for smooth scrolling
 - **Marker clustering**: Map clusters thousands of markers efficiently
 - **Background thumbnails**: Generated asynchronously after initial scan
 - **Priority queue**: Visible thumbnails generated first
+- **HEIC conversion cache**: Full-size HEIC→JPEG conversions are cached on disk
 - **IndexedDB cache**: Photos cached locally for instant reload
 - **Lazy loading**: Images load on-demand
+
+## Security
+
+The server binds to `127.0.0.1` only — the photo library and config API are never reachable from the network.
 
 ## File Structure
 
@@ -277,9 +283,8 @@ Then set `ADAPTER=exif` and `IMAGES_DIR=/path/to/photos`.
 
 ## Known Limitations
 
-- HEIC images converted to JPEG on-the-fly (may be slow for very large files)
-- Video EXIF extraction not yet supported
-- Large libraries (10,000+ photos) may have slower initial scan
+- Video metadata extraction not yet supported — in EXIF mode videos use the file's date and have no GPS pin
+- Photos without EXIF dates (screenshots, PNGs) fall back to the file's creation/modification date
 - View mode / filter preferences are not persisted yet (folder settings are)
 
 ## License
