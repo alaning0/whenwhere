@@ -129,8 +129,16 @@ function detectImageFormat(buffer) {
 
 // Cache for photo metadata
 let photoCache = null;
+let photoCacheMeta = null; // { hash, withLocation, withMedia } computed once per scan
 let cacheTimestamp = null;
-const CACHE_DURATION = 60000;
+const CACHE_DURATION = 5 * 60 * 1000;
+
+// Single-flight scan state. scanEpoch invalidates in-flight scans when the
+// config changes: a scan that started under the old config must not publish
+// its results, progress, or side effects after resetRuntimeState().
+let scanEpoch = 0;
+let scanPromise = null;
+let backgroundThumbnailTimer = null;
 
 let backgroundGenerationInProgress = false;
 
@@ -142,7 +150,14 @@ let priorityQueue = [];
 let processingPriority = false;
 
 function resetRuntimeState() {
+  scanEpoch++;
+  scanPromise = null;
+  if (backgroundThumbnailTimer) {
+    clearTimeout(backgroundThumbnailTimer);
+    backgroundThumbnailTimer = null;
+  }
   photoCache = null;
+  photoCacheMeta = null;
   cacheTimestamp = null;
   thumbnailStatusCache = null;
   thumbnailStatusCacheTime = null;
@@ -284,45 +299,108 @@ function notifyProgressListeners() {
   });
 }
 
+/**
+ * Signature of the current photo set, computed once per scan.
+ * Content-derived (id + size + date per photo) so edits and replacements are
+ * detected even when the photo count stays the same.
+ */
+function computeCacheMeta(photos) {
+  const hashInput = photos.map(p => `${p.id}:${p.size}:${p.date}`).sort().join('\n');
+  return {
+    hash: `v2-${crypto.createHash('md5').update(hashInput).digest('hex').slice(0, 16)}`,
+    withLocation: photos.reduce((n, p) => n + (p.hasLocation ? 1 : 0), 0),
+    withMedia: photos.reduce((n, p) => n + (p.hasMediaFile ? 1 : 0), 0),
+  };
+}
+
+/**
+ * Run one full adapter scan. All published state (cache, progress, background
+ * thumbnail scheduling) is gated on the epoch so a scan that a config change
+ * made stale cannot leak old-directory results into the new configuration.
+ */
+async function runScan(epoch) {
+  try {
+    scanProgress = { current: 0, total: 0, phase: 'starting', scanning: true };
+    notifyProgressListeners();
+
+    const adapterInfo = metadataAdapter.getAdapterInfo();
+    console.log(`Using adapter: ${adapterInfo.displayName}`);
+
+    const onProgress = (current, total, phase) => {
+      if (epoch !== scanEpoch) return; // stale scan: stop broadcasting
+      scanProgress = { current, total, phase, scanning: phase !== 'complete' };
+      notifyProgressListeners();
+    };
+
+    const photos = await metadataAdapter.scanPhotos(getImagesDir(), getPort(), onProgress, {
+      excludeDirs: [getThumbnailsDir()],
+    });
+
+    if (epoch !== scanEpoch) {
+      // Config changed mid-scan — discard instead of caching stale results
+      return photos;
+    }
+
+    photoCache = photos;
+    photoCacheMeta = computeCacheMeta(photos);
+    cacheTimestamp = Date.now();
+
+    scanProgress = { current: photos.length, total: photos.length, phase: 'complete', scanning: false };
+    notifyProgressListeners();
+
+    if (!firstScanDone) {
+      firstScanDone = true;
+      backgroundThumbnailTimer = setTimeout(() => {
+        backgroundThumbnailTimer = null;
+        console.log('🖼️  Starting background thumbnail generation...');
+        startBackgroundThumbnailGeneration();
+      }, 1000);
+    }
+
+    return photos;
+  } catch (err) {
+    if (epoch === scanEpoch) {
+      scanProgress = { current: 0, total: 0, phase: 'idle', scanning: false };
+      notifyProgressListeners();
+    }
+    throw err;
+  }
+}
+
+/**
+ * Get the photo list. Single-flight with stale-while-revalidate:
+ *  - fresh cache: returned as-is
+ *  - scan in flight: existing cache if present, otherwise join the scan
+ *  - stale cache: returned immediately while one background rescan refreshes it
+ */
 async function scanImages() {
   if (!isConfigured()) {
     return [];
   }
 
-  const now = Date.now();
-
-  if (photoCache && cacheTimestamp && (now - cacheTimestamp) < CACHE_DURATION) {
+  if (photoCache && cacheTimestamp && (Date.now() - cacheTimestamp) < CACHE_DURATION) {
     return photoCache;
   }
 
-  scanProgress = { current: 0, total: 0, phase: 'starting', scanning: true };
-  notifyProgressListeners();
-
-  const adapterInfo = metadataAdapter.getAdapterInfo();
-  console.log(`Using adapter: ${adapterInfo.displayName}`);
-
-  const onProgress = (current, total, phase) => {
-    scanProgress = { current, total, phase, scanning: phase !== 'complete' };
-    notifyProgressListeners();
-  };
-
-  const photos = await metadataAdapter.scanPhotos(getImagesDir(), getPort(), onProgress);
-
-  photoCache = photos;
-  cacheTimestamp = now;
-
-  scanProgress = { current: photos.length, total: photos.length, phase: 'complete', scanning: false };
-  notifyProgressListeners();
-
-  if (!firstScanDone) {
-    firstScanDone = true;
-    setTimeout(() => {
-      console.log('🖼️  Starting background thumbnail generation...');
-      startBackgroundThumbnailGeneration();
-    }, 1000);
+  if (scanPromise) {
+    return photoCache || scanPromise;
   }
 
-  return photos;
+  const epoch = scanEpoch;
+  const promise = runScan(epoch).finally(() => {
+    if (scanPromise === promise) {
+      scanPromise = null;
+    }
+  });
+  scanPromise = promise;
+
+  if (photoCache) {
+    // Serve stale data now; the background rescan updates the cache when done
+    promise.catch(err => console.error('Background rescan failed:', err.message));
+    return photoCache;
+  }
+
+  return promise;
 }
 
 // API Routes
@@ -406,14 +484,17 @@ app.get('/api/photos', asyncHandler(async (req, res) => {
       filtered = filtered.filter(p => p.hasMediaFile);
     }
 
-    const latestDate = photos.length > 0 ? photos[photos.length - 1].date : '';
-    const hash = `${photos.length}-${latestDate}`;
+    // Reuse the per-scan metadata unless we were handed a non-cached result
+    // (e.g. a scan that finished after a config change)
+    const meta = (photos === photoCache && photoCacheMeta)
+      ? photoCacheMeta
+      : computeCacheMeta(photos);
 
     res.json({
       total: photos.length,
-      withLocation: photos.filter(p => p.hasLocation).length,
-      withMedia: photos.filter(p => p.hasMediaFile).length,
-      hash,
+      withLocation: meta.withLocation,
+      withMedia: meta.withMedia,
+      hash: meta.hash,
       needsConfig: false,
       photos: filtered
     });
@@ -544,6 +625,7 @@ app.post('/api/refresh', asyncHandler(async (req, res) => {
   if (!isConfigured()) {
     return res.json({ message: 'Not configured', count: 0 });
   }
+  // Null the cache first so the scan logic cannot serve the cache we are busting
   photoCache = null;
   cacheTimestamp = null;
   const photos = await scanImages();
@@ -673,8 +755,8 @@ app.get('/api/thumbnails/status', asyncHandler(async (req, res) => {
     pending: imagePhotos.length - generated,
     percentage,
     inProgress: backgroundGenerationInProgress,
-    withLocation: photos.filter(p => p.hasLocation).length,
-    withMedia: photos.filter(p => p.hasMediaFile).length
+    withLocation: photoCacheMeta ? photoCacheMeta.withLocation : 0,
+    withMedia: photoCacheMeta ? photoCacheMeta.withMedia : 0
   };
   thumbnailStatusCacheTime = now;
 
