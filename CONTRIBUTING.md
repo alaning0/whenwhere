@@ -21,7 +21,9 @@ To build the NSIS installer on your machine:
 npm run dist:win
 ```
 
-Output: `release/WhenWhere Setup <version>.exe`
+Output: `release/WhenWhere-Setup-<version>.exe`
+
+The artifact name is deliberately space-free: GitHub rewrites spaces in release asset names, which would break the `latest.yml` auto-updater reference.
 
 This is useful for testing packaging changes. It does **not** publish a GitHub Release.
 

@@ -6,7 +6,6 @@ server/config.json
 server/.env
 build/
 build-resources/
-release/win-unpacked/
-release/*.blockmap
-release/builder-debug.yml
+release/*
+!release/README.md
 .DS_Store

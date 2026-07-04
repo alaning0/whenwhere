@@ -31,13 +31,16 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
+      # Artifact names must stay space-free: GitHub rewrites spaces in release
+      # asset names (dots), while electron-builder's latest.yml expects the
+      # dash form — a mismatch breaks the auto-updater download.
       - name: Upload installer artifact
         uses: actions/upload-artifact@v7
         with:
           name: whenwhere-windows-installer
           path: |
-            release/WhenWhere Setup *.exe
-            release/WhenWhere Setup *.exe.blockmap
+            release/WhenWhere-Setup-*.exe
+            release/WhenWhere-Setup-*.exe.blockmap
             release/latest.yml
 
       - name: Upload to GitHub Release
@@ -45,6 +48,6 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            release/WhenWhere Setup *.exe
-            release/WhenWhere Setup *.exe.blockmap
+            release/WhenWhere-Setup-*.exe
+            release/WhenWhere-Setup-*.exe.blockmap
             release/latest.yml

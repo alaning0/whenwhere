@@ -1,24 +1,12 @@
-# WhenWhere — Windows release
+# WhenWhere — Windows install guide
 
-Pre-built installer for WhenWhere. No Node.js or developer tools required.
-
-**Preferred download:** the latest build on [GitHub Releases](https://github.com/alaning0/whenwhere/releases). Maintainers publish those by pushing a `v*` tag — see [CONTRIBUTING.md](../CONTRIBUTING.md).
+Installers are published on [GitHub Releases](https://github.com/alaning0/whenwhere/releases) — no Node.js or developer tools required. Maintainers publish them by pushing a `v*` tag — see [CONTRIBUTING.md](../CONTRIBUTING.md). Installers are **not** committed to this folder; locally built ones land here but stay untracked.
 
 After the first install, the app checks for updates automatically and can install them in-app (**Help → Check for Updates…**) — no need to download a new installer by hand.
 
-## Download (this folder)
-
-Older installers may still be present here (Git LFS). Prefer the latest **GitHub Release** for the current version.
-
-| File | Description |
-|------|-------------|
-| [WhenWhere Setup 1.0.0.exe](./WhenWhere%20Setup%201.0.0.exe) | Older Windows x64 installer (NSIS) |
-
-> **Git clone note:** `.exe` files in this folder are stored with [Git LFS](https://git-lfs.com). If a file is only a few hundred bytes after cloning, run `git lfs pull` (or install Git LFS and re-clone). On GitHub, use the **Download** button on the file page to get the real binary.
-
 ## Install
 
-1. Download the latest `WhenWhere Setup *.exe` from [GitHub Releases](https://github.com/alaning0/whenwhere/releases)
+1. Download the latest `WhenWhere-Setup-<version>.exe` from [GitHub Releases](https://github.com/alaning0/whenwhere/releases)
 2. Double-click the installer and choose an install location (or accept the default)
 3. Finish the wizard — shortcuts are added to the Start Menu and desktop
 
@@ -61,7 +49,6 @@ Photos with GPS show on the map; all dated media appear on the timeline, list, a
 
 | Problem | What to try |
 |---------|-------------|
-| Installer is tiny / won't run | Install [Git LFS](https://git-lfs.com) and run `git lfs pull`, or download the `.exe` from GitHub in the browser |
 | App shows a blank error or won't start | Fully quit WhenWhere, then start it again. Ensure nothing else is using port **3002** |
 | No photos appear | Confirm the photos folder path in Settings and that the adapter matches your export type |
 | Reset settings | Delete `%APPDATA%\whenwhere\config.json` and restart the app |
@@ -78,7 +65,9 @@ npm run dist:win
 
 Output:
 
-- `release/WhenWhere Setup <version>.exe` — installer
-- `release/win-unpacked/` — local unpacked build (not committed)
+- `release/WhenWhere-Setup-<version>.exe` — installer
+- `release/win-unpacked/` — local unpacked build
+
+Everything in this folder except this README is untracked build output.
 
 To publish a GitHub Release (tag push → CI), see [CONTRIBUTING.md](../CONTRIBUTING.md). Development setup is in the [main README](../README.md).

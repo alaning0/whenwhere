@@ -6,9 +6,7 @@ Visualize your photos on interactive maps and timelines using GPS metadata from 
 
 ## Install (Windows)
 
-Download the latest installer from **[GitHub Releases](https://github.com/alaning0/whenwhere/releases)** (recommended).
-
-A copy may also be present under [`release/`](release/) in this repo (Git LFS).
+Download the latest installer from **[GitHub Releases](https://github.com/alaning0/whenwhere/releases)**.
 
 1. Double-click the installer and follow the prompts
 2. Launch **WhenWhere** from the Start Menu or desktop shortcut
