@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useDeferredValue } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useDeferredValue, useRef } from 'react';
 import MapView from './components/MapView';
 import Timeline from './components/Timeline';
 import ListView from './components/ListView';
@@ -42,10 +42,35 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [needsConfig, setNeedsConfig] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
+  const [imagesDir, setImagesDir] = useState('');
+  const loadAbortRef = useRef(null);
+  const loadGenerationRef = useRef(0);
+
+  useEffect(() => {
+    if (!loading) return;
+
+    let cancelled = false;
+    fetch(`${API_URL}/api/config`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.imagesDir) {
+          setImagesDir(data.imagesDir);
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loading, reloadToken]);
 
   // Fetch photos - triggered when SSE is ready or after settings save
   useEffect(() => {
     if (!sseReady) return; // Wait for SSE to connect first
+
+    const generation = ++loadGenerationRef.current;
+    const abortController = new AbortController();
+    loadAbortRef.current = abortController;
     
     async function loadPhotos() {
       let hadCachedPhotos = false;
@@ -65,12 +90,16 @@ function App() {
         }
         
         // Step 2: Fetch fresh data from server (in background if cache exists)
-        const response = await fetch(`${API_URL}/api/photos`);
+        const response = await fetch(`${API_URL}/api/photos`, {
+          signal: abortController.signal,
+        });
+        if (generation !== loadGenerationRef.current) return;
         if (!response.ok) {
           throw new Error('Failed to fetch photos');
         }
         
         const data = await response.json();
+        if (generation !== loadGenerationRef.current) return;
 
         if (data.needsConfig) {
           setNeedsConfig(true);
@@ -87,6 +116,7 @@ function App() {
         
         // Step 3: Check if data has changed
         const cacheMetadata = await getCacheMetadata();
+        if (generation !== loadGenerationRef.current) return;
         const needsUpdate = !cacheMetadata || cacheMetadata.hash !== data.hash;
         
         if (needsUpdate) {
@@ -105,18 +135,25 @@ function App() {
         }
         
       } catch (err) {
+        if (err.name === 'AbortError') return;
         console.error('Error fetching photos:', err);
         // Only show error if we have no cached data (avoid stale `photos` from render closure)
         if (!hadCachedPhotos) {
           setError(err.message);
         }
       } finally {
-        setLoading(false);
-        setSyncing(false);
+        if (generation === loadGenerationRef.current) {
+          setLoading(false);
+          setSyncing(false);
+        }
       }
     }
     
     loadPhotos();
+
+    return () => {
+      abortController.abort();
+    };
   }, [sseReady, reloadToken]);
 
   const handleSettingsSaved = useCallback(async () => {
@@ -127,6 +164,21 @@ function App() {
     setSelectedPhoto(null);
     setLoading(true);
     setReloadToken((token) => token + 1);
+  }, []);
+
+  const handleChooseDifferentFolder = useCallback(async () => {
+    loadGenerationRef.current += 1;
+    loadAbortRef.current?.abort();
+
+    try {
+      await fetch(`${API_URL}/api/scan/cancel`, { method: 'POST' });
+    } catch (err) {
+      console.error('Failed to cancel scan:', err);
+    }
+
+    setLoading(false);
+    setSyncing(false);
+    setSettingsOpen(true);
   }, []);
   
   // Callback when SSE connection is ready
@@ -233,7 +285,19 @@ function App() {
   if (loading) {
     return (
       <div className="app loading-screen">
-        <ScanProgress onReady={handleSseReady} />
+        <ScanProgress
+          onReady={handleSseReady}
+          onChooseDifferentFolder={handleChooseDifferentFolder}
+          imagesDir={imagesDir}
+        />
+        <Settings
+          open={settingsOpen}
+          required={needsConfig}
+          onClose={() => {
+            if (!needsConfig) setSettingsOpen(false);
+          }}
+          onSaved={handleSettingsSaved}
+        />
       </div>
     );
   }

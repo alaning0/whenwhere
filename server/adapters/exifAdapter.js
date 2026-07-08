@@ -26,7 +26,8 @@ import {
   getAllFilesRecursively,
   makePhotoId,
   comparePhotosByDate,
-  mapWithConcurrency
+  mapWithConcurrency,
+  ScanCancelledError,
 } from './utils.js';
 
 // EXIF lives at the start of the file — reading the whole image is wasted I/O
@@ -37,7 +38,7 @@ const EXIF_READ_BYTES = 128 * 1024;
  * @param {string} imagesDir - Path to the directory containing images
  * @param {number} serverPort - Port number for constructing URLs
  * @param {function} onProgress - Optional callback for progress updates: (current, total, phase) => void
- * @param {object} options - { excludeDirs?: string[] } directories to skip (e.g. the thumbnails folder)
+ * @param {object} options - { excludeDirs?: string[], isCancelled?: () => boolean }
  * @returns {Promise<Array>} - Array of photo metadata objects
  */
 export async function scanPhotos(imagesDir, serverPort, onProgress = null, options = {}) {
@@ -50,6 +51,9 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
   const files = await getAllFilesRecursively(imagesDir, (filesFound, dirsScanned) => {
     if (onProgress) onProgress(filesFound, dirsScanned, 'scanning');
   }, options);
+  if (options.isCancelled?.()) {
+    throw new ScanCancelledError();
+  }
   console.log(`EXIF Adapter: Found ${files.length} files`);
 
   // Filter for media files
@@ -76,7 +80,7 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
       onProgress(completed, total, 'processing');
     }
     return photo;
-  });
+  }, { isCancelled: options.isCancelled });
 
   const photos = results.filter(Boolean);
 

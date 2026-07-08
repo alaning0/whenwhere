@@ -33,7 +33,8 @@ import {
   getAllFilesRecursively,
   makePhotoId,
   comparePhotosByDate,
-  mapWithConcurrency
+  mapWithConcurrency,
+  ScanCancelledError,
 } from './utils.js';
 
 // Takeout files that are never photo sidecars, by exact basename
@@ -57,7 +58,7 @@ function isNonPhotoJson(jsonPath) {
  * @param {string} imagesDir - Path to the directory containing images and JSON files
  * @param {number} serverPort - Port number for constructing URLs
  * @param {function} onProgress - Optional callback for progress updates: (current, total, phase) => void
- * @param {object} options - { excludeDirs?: string[] } directories to skip (e.g. the thumbnails folder)
+ * @param {object} options - { excludeDirs?: string[], isCancelled?: () => boolean }
  * @returns {Promise<Array>} - Array of photo metadata objects
  */
 export async function scanPhotos(imagesDir, serverPort, onProgress = null, options = {}) {
@@ -69,6 +70,9 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
   const files = await getAllFilesRecursively(imagesDir, (filesFound, dirsScanned) => {
     if (onProgress) onProgress(filesFound, dirsScanned, 'scanning');
   }, options);
+  if (options.isCancelled?.()) {
+    throw new ScanCancelledError();
+  }
   console.log(`Google Photos Takeout Adapter: Found ${files.length} files`);
 
   const jsonFiles = files.filter(f => f.toLowerCase().endsWith('.json') && !isNonPhotoJson(f));
@@ -96,7 +100,7 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
       onProgress(completed, total, 'processing');
     }
     return photo;
-  });
+  }, { isCancelled: options.isCancelled });
 
   const photos = results.filter(Boolean);
 

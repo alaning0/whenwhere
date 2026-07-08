@@ -12,9 +12,10 @@ const phaseLabels = {
   complete: 'Ready!'
 };
 
-function ScanProgress({ onReady }) {
+function ScanProgress({ onReady, onChooseDifferentFolder, imagesDir }) {
   const [progress, setProgress] = useState({ current: 0, total: 0, phase: 'idle', scanning: false });
   const [connected, setConnected] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   useEffect(() => {
     const eventSource = new EventSource(`${API_URL}/api/scan/progress`);
@@ -47,6 +48,18 @@ function ScanProgress({ onReady }) {
   const percentage = progress.total > 0 
     ? Math.round((progress.current / progress.total) * 100) 
     : 0;
+
+  const scanActive = progress.scanning || !['idle', 'complete'].includes(progress.phase);
+
+  const handleChooseDifferentFolder = async () => {
+    if (!onChooseDifferentFolder || cancelling) return;
+    setCancelling(true);
+    try {
+      await onChooseDifferentFolder();
+    } finally {
+      setCancelling(false);
+    }
+  };
 
   return (
     <div className="scan-progress">
@@ -98,6 +111,25 @@ function ScanProgress({ onReady }) {
           </div>
         </div>
       </div>
+
+      {imagesDir && (
+        <div className="scan-progress-folder" title={imagesDir}>
+          {imagesDir}
+        </div>
+      )}
+
+      {scanActive && onChooseDifferentFolder && (
+        <div className="scan-progress-actions">
+          <button
+            type="button"
+            className="scan-progress-cancel"
+            onClick={handleChooseDifferentFolder}
+            disabled={cancelling}
+          >
+            {cancelling ? 'Cancelling…' : 'Choose different folder'}
+          </button>
+        </div>
+      )}
       
       {!connected && (
         <div className="scan-progress-disconnected">

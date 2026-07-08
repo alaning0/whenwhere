@@ -16,6 +16,19 @@ export const MEDIA_EXTENSIONS = [...IMAGE_EXTENSIONS, ...VIDEO_EXTENSIONS];
 // How many files each adapter processes concurrently during a scan
 export const SCAN_CONCURRENCY = 12;
 
+export class ScanCancelledError extends Error {
+  constructor() {
+    super('Scan cancelled');
+    this.name = 'ScanCancelledError';
+  }
+}
+
+function throwIfCancelled(isCancelled) {
+  if (isCancelled?.()) {
+    throw new ScanCancelledError();
+  }
+}
+
 /**
  * Stable photo id derived from the adapter's unique iteration key.
  * Must be the per-record unique path (media path, .xmp path, .json path) —
@@ -49,14 +62,17 @@ export function comparePhotosByDate(a, b) {
  * @param {Array} items
  * @param {number} limit - Max concurrent fn invocations
  * @param {function} fn - async (item, index) => result
+ * @param {object} [options] - { isCancelled?: () => boolean }
  * @returns {Promise<Array>} results in item order
  */
-export async function mapWithConcurrency(items, limit, fn) {
+export async function mapWithConcurrency(items, limit, fn, options = {}) {
+  const { isCancelled } = options;
   const results = new Array(items.length);
   let next = 0;
 
   const worker = async () => {
     while (true) {
+      throwIfCancelled(isCancelled);
       const index = next++;
       if (index >= items.length) return;
       results[index] = await fn(items[index], index);
@@ -155,6 +171,7 @@ export async function getAllFilesRecursively(dir, onProgress = null, options = {
   state.dirsScanned++;
 
   for (const entry of entries) {
+    throwIfCancelled(options.isCancelled);
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (entry.name.startsWith('.') || state.excludeDirs.has(normalizeDirKey(fullPath))) {

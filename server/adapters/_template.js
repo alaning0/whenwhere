@@ -3,9 +3,9 @@
  * 
  * Each adapter must export:
  *   - scanPhotos(imagesDir, serverPort, onProgress, options) - Scans directory and returns photo array
- *     options: { excludeDirs?: string[] } — directories the walker must skip
- *     (the server passes the thumbnails folder here; forward it to
- *     getAllFilesRecursively if you scan recursively)
+ *     options: { excludeDirs?: string[], isCancelled?: () => boolean }
+ *     — excludeDirs: directories the walker must skip (forward to getAllFilesRecursively)
+ *     — isCancelled: return true to abort the scan cooperatively (throw ScanCancelledError)
  *   - getAdapterInfo() - Returns metadata about the adapter
  *
  * Optionally re-export these constants for backward compatibility:
@@ -63,7 +63,7 @@ import {
  * @param {number} serverPort - Port number for constructing URLs
  * @param {function} onProgress - Optional callback: (current, total, phase) => void
  *                                Phases: 'scanning', 'processing', 'sorting', 'complete'
- * @param {object} options - { excludeDirs?: string[] } — forward to getAllFilesRecursively
+ * @param {object} options - { excludeDirs?: string[], isCancelled?: () => boolean }
  * @returns {Promise<Array>} - Array of photo metadata objects
  */
 export async function scanPhotos(imagesDir, serverPort, onProgress = null, options = {}) {
@@ -79,7 +79,7 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
   // Example structure:
   // 1. Read files from imagesDir (use getAllFilesRecursively(imagesDir, cb, options)
   //    for subdirectories — it skips hidden folders and options.excludeDirs)
-  // 2. Process files with mapWithConcurrency(files, SCAN_CONCURRENCY, fn) —
+  // 2. Process files with mapWithConcurrency(files, SCAN_CONCURRENCY, fn, { isCancelled: options.isCancelled }) —
   //    use fs/promises, never the *Sync variants (they block the event loop)
   // 3. Build photo objects with all required fields; return null to skip a file
   // 4. Filter out nulls, sort, return

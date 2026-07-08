@@ -17,6 +17,7 @@ import {
   getValidAdapters,
   updateConfig,
 } from './config.js';
+import { ScanCancelledError } from './adapters/utils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -430,6 +431,7 @@ async function runScan(epoch) {
 
     const photos = await metadataAdapter.scanPhotos(getImagesDir(), getPort(), onProgress, {
       excludeDirs: [getThumbnailsDir()],
+      isCancelled: () => epoch !== scanEpoch,
     });
 
     if (epoch !== scanEpoch) {
@@ -455,6 +457,9 @@ async function runScan(epoch) {
 
     return photos;
   } catch (err) {
+    if (err instanceof ScanCancelledError || epoch !== scanEpoch) {
+      return [];
+    }
     if (epoch === scanEpoch) {
       scanProgress = { current: 0, total: 0, phase: 'idle', scanning: false };
       notifyProgressListeners();
@@ -553,6 +558,11 @@ app.get('/api/scan/progress', (req, res) => {
   req.on('close', () => {
     progressListeners = progressListeners.filter(r => r !== res);
   });
+});
+
+app.post('/api/scan/cancel', (req, res) => {
+  resetRuntimeState();
+  res.json({ cancelled: true });
 });
 
 app.get('/api/photos', asyncHandler(async (req, res) => {

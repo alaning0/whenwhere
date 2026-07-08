@@ -27,7 +27,8 @@ import {
   findMediaFile,
   makePhotoId,
   comparePhotosByDate,
-  mapWithConcurrency
+  mapWithConcurrency,
+  ScanCancelledError,
 } from './utils.js';
 
 /**
@@ -35,7 +36,7 @@ import {
  * @param {string} imagesDir - Path to the directory containing images and XMP files
  * @param {number} serverPort - Port number for constructing URLs
  * @param {function} onProgress - Optional callback for progress updates: (current, total, phase) => void
- * @param {object} options - Reserved for walker options (unused: this adapter scans a flat directory)
+ * @param {object} options - { isCancelled?: () => boolean }
  * @returns {Promise<Array>} - Array of photo metadata objects
  */
 export async function scanPhotos(imagesDir, serverPort, onProgress = null, options = {}) {
@@ -45,6 +46,9 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
   if (onProgress) onProgress(0, 0, 'collecting');
 
   const files = await fsp.readdir(imagesDir);
+  if (options.isCancelled?.()) {
+    throw new ScanCancelledError();
+  }
   const xmpFiles = files.filter(f => f.toLowerCase().endsWith('.xmp'));
   const mediaFiles = files.filter(f => {
     const ext = path.extname(f).toLowerCase();
@@ -70,7 +74,7 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
       onProgress(completed, total, 'processing');
     }
     return photo;
-  });
+  }, { isCancelled: options.isCancelled });
 
   const photos = results.filter(Boolean);
 
