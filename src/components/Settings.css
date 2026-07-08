@@ -90,6 +90,12 @@
 .settings-path-row {
   display: flex;
   gap: 8px;
+  align-items: center;
+}
+
+.settings-path-row input {
+  min-height: 40px;
+  box-sizing: border-box;
 }
 
 .settings-field input,
@@ -113,18 +119,22 @@
 
 .settings-browse {
   flex-shrink: 0;
-  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
   background: var(--bg-tertiary);
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  color: var(--text-primary);
-  font-family: 'Instrument Sans', sans-serif;
-  font-weight: 500;
-  font-size: 13px;
+  color: var(--text-secondary);
   cursor: pointer;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
 }
 
 .settings-browse:hover {
+  background: var(--bg-primary);
   border-color: var(--accent-primary);
   color: var(--accent-primary);
 }

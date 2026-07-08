@@ -8,6 +8,14 @@ const ADAPTER_LABELS = {
   'google-takeout': 'Google Photos Takeout',
 };
 
+function FolderBrowseIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+    </svg>
+  );
+}
+
 function Settings({ open, onClose, onSaved, required = false }) {
   const [adapter, setAdapter] = useState('exif');
   const [imagesDir, setImagesDir] = useState('');
@@ -141,8 +149,14 @@ function Settings({ open, onClose, onSaved, required = false }) {
                   autoFocus={required}
                 />
                 {canBrowse && (
-                  <button type="button" className="settings-browse" onClick={() => browseFolder('images')}>
-                    Browse
+                  <button
+                    type="button"
+                    className="settings-browse"
+                    onClick={() => browseFolder('images')}
+                    aria-label="Browse for photos folder"
+                    title="Browse for photos folder"
+                  >
+                    <FolderBrowseIcon />
                   </button>
                 )}
               </div>
@@ -158,8 +172,14 @@ function Settings({ open, onClose, onSaved, required = false }) {
                   placeholder="Defaults to photos folder\.thumbnails"
                 />
                 {canBrowse && (
-                  <button type="button" className="settings-browse" onClick={() => browseFolder('thumbnails')}>
-                    Browse
+                  <button
+                    type="button"
+                    className="settings-browse"
+                    onClick={() => browseFolder('thumbnails')}
+                    aria-label="Browse for thumbnails folder"
+                    title="Browse for thumbnails folder"
+                  >
+                    <FolderBrowseIcon />
                   </button>
                 )}
               </div>
