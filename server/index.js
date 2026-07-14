@@ -78,7 +78,7 @@ const asyncHandler = (fn) => (req, res, next) => {
 // Thumbnail settings
 const THUMBNAIL_WIDTH = 300;
 const THUMBNAIL_QUALITY = 80;
-const THUMBNAIL_CONCURRENCY = 2;
+const THUMBNAIL_CONCURRENCY = 4;
 
 /**
  * Detect actual image format by reading magic bytes
