@@ -6,12 +6,40 @@ import 'leaflet/dist/leaflet.css';
 import iconRetinaUrl from 'leaflet/dist/images/marker-icon-2x.png';
 import iconUrl from 'leaflet/dist/images/marker-icon.png';
 import shadowUrl from 'leaflet/dist/images/marker-shadow.png';
+import { API_URL } from '../config';
 import './MapView.css';
 
 // Fix for default marker icons in react-leaflet — bundled locally so the
 // packaged desktop app works offline instead of fetching from a CDN
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({ iconRetinaUrl, iconUrl, shadowUrl });
+
+// Cap how many in-view photos we push to the priority queue so a
+// zoomed-out map cannot flood the server with thousands of jobs.
+const MAP_PRIORITY_LIMIT = 48;
+
+function debounce(fn, delay) {
+  let timeoutId;
+  const debounced = (...args) => {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => fn(...args), delay);
+  };
+  debounced.cancel = () => clearTimeout(timeoutId);
+  return debounced;
+}
+
+async function prioritizeThumbnailFilenames(filenames, highPriority = true) {
+  if (!filenames.length) return;
+  try {
+    await fetch(`${API_URL}/api/thumbnails/priority`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filenames, highPriority }),
+    });
+  } catch (error) {
+    // Silent fail — background generation still covers these eventually
+  }
+}
 
 // Cache for marker icons to avoid recreating on every render
 const iconCache = new Map();
@@ -166,6 +194,61 @@ function MapViewController({ selectedPhoto, photos, isPreviewExpanded }) {
     }
   }, [selectedPhoto, photos, map, isPreviewExpanded]);
   
+  return null;
+}
+
+/**
+ * Prefer thumbnails for photos currently inside the map viewport so panning
+ * and clicking pins get previews ready sooner. Nearest-to-center first, capped.
+ */
+function MapBoundsThumbnailPriority({ photos }) {
+  const map = useMap();
+  const photosRef = useRef(photos);
+  photosRef.current = photos;
+
+  useEffect(() => {
+    if (!map) return;
+
+    const updatePriority = debounce(() => {
+      const bounds = map.getBounds();
+      const center = map.getCenter();
+      if (!bounds || !center) return;
+
+      const candidates = [];
+      for (const photo of photosRef.current) {
+        if (!photo.hasLocation || !photo.hasMediaFile || photo.isVideo || !photo.isImage) {
+          continue;
+        }
+        if (!bounds.contains([photo.lat, photo.lng])) {
+          continue;
+        }
+        const dLat = photo.lat - center.lat;
+        const dLng = photo.lng - center.lng;
+        candidates.push({ filename: photo.filename, distSq: dLat * dLat + dLng * dLng });
+      }
+
+      candidates.sort((a, b) => a.distSq - b.distSq);
+      const filenames = candidates.slice(0, MAP_PRIORITY_LIMIT).map((c) => c.filename);
+      prioritizeThumbnailFilenames(filenames, true);
+    }, 150);
+
+    updatePriority();
+    map.on('moveend', updatePriority);
+    map.on('zoomend', updatePriority);
+
+    return () => {
+      updatePriority.cancel();
+      map.off('moveend', updatePriority);
+      map.off('zoomend', updatePriority);
+    };
+  }, [map]);
+
+  // Photos list may arrive after first map paint — re-run once data is ready
+  useEffect(() => {
+    if (!map || photos.length === 0) return;
+    map.fire('moveend');
+  }, [map, photos]);
+
   return null;
 }
 
@@ -343,8 +426,16 @@ const ClusterPopupItem = memo(function ClusterPopupItem({ photo, onClick }) {
 
 // Cluster popup grid component
 const ClusterPopup = memo(function ClusterPopup({ photos, onPhotoSelect, onClose }) {
-  if (!photos || photos.length === 0) return null;
-  
+  // Prefer thumbnails for the cluster grid as soon as it opens
+  useEffect(() => {
+    if (!photos || photos.length === 0) return;
+    const filenames = photos
+      .filter((p) => p.hasMediaFile && p.isImage && !p.isVideo)
+      .slice(0, MAP_PRIORITY_LIMIT)
+      .map((p) => p.filename);
+    prioritizeThumbnailFilenames(filenames, true);
+  }, [photos]);
+
   // Close on escape key
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -358,6 +449,8 @@ const ClusterPopup = memo(function ClusterPopup({ photos, onPhotoSelect, onClose
     onPhotoSelect(photo);
     onClose();
   }, [onPhotoSelect, onClose]);
+
+  if (!photos || photos.length === 0) return null;
   
   return (
     <div className="cluster-popup-overlay" onClick={onClose}>
@@ -517,6 +610,7 @@ function MapView({ photos, selectedPhoto, onPhotoSelect, pinMode, onOpenLightbox
         />
         
         <MapViewController selectedPhoto={selectedPhoto} photos={photos} isPreviewExpanded={isPreviewExpanded} />
+        <MapBoundsThumbnailPriority photos={photosWithLocation} />
         
         {pinMode === 'all' && (
           <>
