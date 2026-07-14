@@ -1,8 +1,10 @@
+import './env.js'; // must be first: sets UV_THREADPOOL_SIZE before the pool is used
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
+import os from 'os';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import sharp from 'sharp';
@@ -78,7 +80,6 @@ const asyncHandler = (fn) => (req, res, next) => {
 // Thumbnail settings
 const THUMBNAIL_WIDTH = 300;
 const THUMBNAIL_QUALITY = 80;
-const THUMBNAIL_CONCURRENCY = 4;
 
 /**
  * Detect actual image format by reading magic bytes
@@ -147,7 +148,13 @@ let thumbnailStatusCache = null;
 let thumbnailStatusCacheTime = null;
 const THUMBNAIL_STATUS_CACHE_DURATION = 30000;
 
-let priorityQueue = [];
+// Two prefetch buckets. urgentQueue holds clicked/selected photos (prepend +
+// dedupe, capped, never wiped); viewportQueue holds the current view's prefetch
+// and is replaced wholesale by whichever view last sent it. Urgent drains first
+// so a scroll can't bump a photo the user actually clicked.
+const URGENT_QUEUE_CAP = 32;
+let urgentQueue = [];
+let viewportQueue = [];
 let processingPriority = false;
 
 function resetRuntimeState() {
@@ -162,7 +169,8 @@ function resetRuntimeState() {
   cacheTimestamp = null;
   thumbnailStatusCache = null;
   thumbnailStatusCacheTime = null;
-  priorityQueue = [];
+  urgentQueue = [];
+  viewportQueue = [];
   processingPriority = false;
   backgroundGenerationInProgress = false;
   firstScanDone = false;
@@ -204,28 +212,58 @@ async function convertHeicBufferToJpeg(buffer) {
   }
 }
 
-// Full-size HEIC conversion costs seconds of CPU and ~50MB+ peak memory per
-// 12MP image. Convert once to disk, cap concurrency so a lightbox arrow-key
-// spree cannot stack conversions, and share in-flight jobs per output path.
-const FULL_CONVERT_CONCURRENCY = 2;
-let fullConvertActive = 0;
-const fullConvertWaiters = [];
-const inFlightFullConversions = new Map();
+// All sharp/heic image jobs (thumbnails and full-size HEIC conversions) share
+// one semaphore. sharp.concurrency(1) makes each job use a single threadpool
+// thread, so IMAGE_WORK_LIMIT concurrent jobs map to that many threads (see
+// server/env.js for UV_THREADPOOL_SIZE).
+//
+// Two lanes: interactive jobs (an HTTP response is blocked on them — a photo
+// the user is looking at) jump ahead of background jobs and are served first
+// when a slot frees. Background jobs (the prefetch queue and the full-library
+// sweep) run at full width when idle, but stop taking new slots while any
+// interactive job is waiting. So an interactive job waits at most one in-flight
+// job, never the whole background batch — and nothing is cancelled; background
+// resumes the instant the interactive job releases its slot.
+sharp.concurrency(1);
+const IMAGE_WORK_LIMIT = Math.max(2, os.cpus().length - 1);
+let imageWorkActive = 0;
+const interactiveWaiters = [];
+const backgroundWaiters = [];
 
-function acquireConvertSlot() {
-  if (fullConvertActive < FULL_CONVERT_CONCURRENCY) {
-    fullConvertActive++;
-    return Promise.resolve();
+/**
+ * Acquire a slot for one image job. Resolves true when the slot is held (the
+ * caller must releaseImageSlot() when done), or false if the job was aborted
+ * while queued (no slot held — do NOT release). Background acquisitions yield
+ * to any waiting interactive work.
+ * @param {{ interactive?: boolean, isAborted?: () => boolean }} opts
+ */
+function acquireImageSlot({ interactive = false, isAborted } = {}) {
+  if (imageWorkActive < IMAGE_WORK_LIMIT && (interactive || interactiveWaiters.length === 0)) {
+    imageWorkActive++;
+    return Promise.resolve(true);
   }
-  return new Promise(resolve => fullConvertWaiters.push(resolve));
+  return new Promise(resolve => {
+    (interactive ? interactiveWaiters : backgroundWaiters).push({ resolve, isAborted });
+  });
 }
 
-function releaseConvertSlot() {
-  const next = fullConvertWaiters.shift();
-  if (next) {
-    next(); // hand the slot to the next waiter
-  } else {
-    fullConvertActive--;
+function releaseImageSlot() {
+  // Interactive waiters always win; a background waiter proceeds only when no
+  // interactive work is queued. Aborted waiters are skipped without consuming
+  // the slot, so rapid click-through frees capacity for the latest request.
+  while (true) {
+    const next = interactiveWaiters.shift()
+      || (interactiveWaiters.length === 0 ? backgroundWaiters.shift() : null);
+    if (!next) {
+      imageWorkActive--;
+      return;
+    }
+    if (next.isAborted && next.isAborted()) {
+      next.resolve(false); // waiter gave up — keep the slot and try the next one
+      continue;
+    }
+    next.resolve(true); // hand our slot straight to this waiter (active unchanged)
+    return;
   }
 }
 
@@ -234,12 +272,16 @@ function getConvertedFullPath(filename) {
   return path.join(getThumbnailsDir(), 'full', `${hash}_${path.basename(filename)}.jpg`);
 }
 
+// Concurrent requests for the same full-size HEIC share one conversion job —
+// two writers on the same output path would corrupt it.
+const inFlightFullConversions = new Map();
+
 /**
  * Return the path of a full-size JPEG conversion of the given HEIC,
  * converting and caching it on first request. Returns null on failure so the
  * route can fall back to serving the raw file.
  */
-async function getConvertedHeic(sourcePath, filename) {
+async function getConvertedHeic(sourcePath, filename, opts = {}) {
   const outPath = getConvertedFullPath(filename);
   const existing = await fsp.stat(outPath).catch(() => null);
   if (existing && existing.size > 0) {
@@ -251,7 +293,9 @@ async function getConvertedHeic(sourcePath, filename) {
   }
 
   const job = (async () => {
-    await acquireConvertSlot();
+    // Serving a HEIC in the browser blocks on this, so it takes the interactive lane
+    const granted = await acquireImageSlot({ interactive: true, isAborted: opts.isAborted });
+    if (!granted) return null;
     try {
       // Another request may have finished it while we waited for a slot
       const raced = await fsp.stat(outPath).catch(() => null);
@@ -282,7 +326,7 @@ async function getConvertedHeic(sourcePath, filename) {
         }
       }
     } finally {
-      releaseConvertSlot();
+      releaseImageSlot();
     }
   })().finally(() => inFlightFullConversions.delete(outPath));
 
@@ -294,18 +338,18 @@ async function getConvertedHeic(sourcePath, filename) {
 // two writers on the same output path would corrupt it.
 const inFlightThumbnails = new Map();
 
-async function generateThumbnail(filename) {
+async function generateThumbnail(filename, opts = {}) {
   const thumbnailPath = getThumbnailPath(filename);
   if (inFlightThumbnails.has(thumbnailPath)) {
     return inFlightThumbnails.get(thumbnailPath);
   }
-  const job = generateThumbnailInner(filename, thumbnailPath)
+  const job = generateThumbnailInner(filename, thumbnailPath, opts)
     .finally(() => inFlightThumbnails.delete(thumbnailPath));
   inFlightThumbnails.set(thumbnailPath, job);
   return job;
 }
 
-async function generateThumbnailInner(filename, thumbnailPath) {
+async function generateThumbnailInner(filename, thumbnailPath, opts = {}) {
   const imagesDir = getImagesDir();
   const sourcePath = (filename.includes('/') || filename.includes('\\'))
     ? filename
@@ -339,11 +383,17 @@ async function generateThumbnailInner(filename, thumbnailPath) {
 
   const ext = path.extname(filename).toLowerCase();
 
-  try {
-    if (getVideoExtensions().includes(ext)) {
-      return null;
-    }
+  if (getVideoExtensions().includes(ext)) {
+    return null;
+  }
 
+  // Gate the heavy read + sharp work on the shared image-work semaphore
+  const granted = await acquireImageSlot({ interactive: opts.interactive, isAborted: opts.isAborted });
+  if (!granted) {
+    return null; // request went away while queued
+  }
+
+  try {
     const buffer = await fsp.readFile(sourcePath);
 
     try {
@@ -383,6 +433,8 @@ async function generateThumbnailInner(filename, thumbnailPath) {
       console.error(`Failed to generate thumbnail for ${filename}:`, error.message);
     }
     return null;
+  } finally {
+    releaseImageSlot();
   }
 }
 
@@ -647,6 +699,13 @@ app.get('/images/:filename', asyncHandler(async (req, res) => {
   }
   const wantsThumbnail = req.query.thumb === 'true';
 
+  // Track client disconnect so we can skip expensive generation for a request
+  // whose <img> was already replaced (rapid click-through, lightbox nav). Jobs
+  // already running can't be cancelled, but we avoid starting new ones and free
+  // any queued slot for the request the user is actually waiting on.
+  let clientGone = false;
+  res.on('close', () => { if (!res.writableFinished) clientGone = true; });
+
   if (!isResolvedPathInsideDir(filePath, imagesDir)) {
     return res.status(403).json({ error: 'Access denied' });
   }
@@ -671,7 +730,12 @@ app.get('/images/:filename', asyncHandler(async (req, res) => {
       // generate below
     }
 
-    const generatedPath = await generateThumbnail(filename);
+    if (clientGone) return; // navigated away before we started generating
+    const generatedPath = await generateThumbnail(filename, {
+      interactive: true,
+      isAborted: () => clientGone,
+    });
+    if (clientGone) return;
     if (generatedPath) {
       res.set('Content-Type', 'image/webp');
       res.set('Cache-Control', 'public, max-age=604800');
@@ -682,7 +746,9 @@ app.get('/images/:filename', asyncHandler(async (req, res) => {
   }
 
   if (ext === '.heic') {
-    const convertedPath = await getConvertedHeic(filePath, filename);
+    if (clientGone) return; // navigated away before we started converting
+    const convertedPath = await getConvertedHeic(filePath, filename, { isAborted: () => clientGone });
+    if (clientGone) return;
     if (convertedPath) {
       res.set('Content-Type', 'image/jpeg');
       res.set('Cache-Control', 'public, max-age=86400');
@@ -751,10 +817,13 @@ app.post('/api/thumbnails/priority', asyncHandler(async (req, res) => {
   }
 
   if (highPriority) {
-    priorityQueue = [...needsGeneration, ...priorityQueue.filter(f => !needsGeneration.includes(f))];
-    console.log(`⚡ High priority thumbnail request: ${needsGeneration[0]}`);
+    // Clicked/selected photo: front of the urgent bucket, deduped, capped
+    urgentQueue = [...needsGeneration, ...urgentQueue.filter(f => !needsGeneration.includes(f))]
+      .slice(0, URGENT_QUEUE_CAP);
+    console.log(`⚡ Urgent thumbnail request: ${needsGeneration[0]}`);
   } else {
-    priorityQueue = needsGeneration;
+    // Viewport prefetch: replace whatever the last view queued
+    viewportQueue = needsGeneration;
   }
 
   if (!processingPriority) {
@@ -764,25 +833,32 @@ app.post('/api/thumbnails/priority', asyncHandler(async (req, res) => {
   res.json({ queued: needsGeneration.length, highPriority: !!highPriority });
 }));
 
+/** Next prefetch file — urgent bucket first, then viewport. */
+function nextPriorityFile() {
+  if (urgentQueue.length > 0) return urgentQueue.shift();
+  if (viewportQueue.length > 0) return viewportQueue.shift();
+  return null;
+}
+
 async function processPriorityQueue() {
-  if (processingPriority || priorityQueue.length === 0) {
+  if (processingPriority || (urgentQueue.length === 0 && viewportQueue.length === 0)) {
     return;
   }
 
   processingPriority = true;
 
   const processNext = async () => {
-    while (priorityQueue.length > 0) {
-      const filename = priorityQueue.shift();
+    let filename;
+    // Re-checks urgent first on every iteration, so a click mid-drain jumps ahead
+    while ((filename = nextPriorityFile()) !== null) {
       if (!(await thumbnailExists(filename))) {
-        await generateThumbnail(filename);
+        await generateThumbnail(filename); // background lane — this is prefetch
       }
     }
   };
 
-  const workers = Array(Math.min(THUMBNAIL_CONCURRENCY, priorityQueue.length))
-    .fill(null)
-    .map(() => processNext());
+  const workerCount = Math.min(IMAGE_WORK_LIMIT, urgentQueue.length + viewportQueue.length);
+  const workers = Array(workerCount).fill(null).map(() => processNext());
 
   await Promise.all(workers);
 
@@ -881,7 +957,7 @@ async function startBackgroundThumbnailGeneration() {
       return;
     }
 
-    console.log(`🖼️  Background: Generating ${needsThumbnail.length} thumbnails using ${THUMBNAIL_CONCURRENCY} workers...`);
+    console.log(`🖼️  Background: Generating ${needsThumbnail.length} thumbnails using ${IMAGE_WORK_LIMIT} workers...`);
 
     let generated = 0;
     let failed = 0;
@@ -889,7 +965,7 @@ async function startBackgroundThumbnailGeneration() {
 
     const processNext = async () => {
       while (index < needsThumbnail.length) {
-        if (priorityQueue.length > 0) {
+        if (urgentQueue.length > 0 || viewportQueue.length > 0) {
           await processPriorityQueue();
         }
 
@@ -912,7 +988,7 @@ async function startBackgroundThumbnailGeneration() {
       }
     };
 
-    const workers = Array(THUMBNAIL_CONCURRENCY).fill(null).map(() => processNext());
+    const workers = Array(IMAGE_WORK_LIMIT).fill(null).map(() => processNext());
     await Promise.all(workers);
 
     console.log(`✅ Background generation complete: ${generated} generated, ${failed} failed`);

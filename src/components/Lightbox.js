@@ -1,4 +1,5 @@
 import React, { useEffect, useCallback, memo } from 'react';
+import ProgressiveImage from './ProgressiveImage';
 import './Lightbox.css';
 
 function Lightbox({ photo, photos, onClose, onNavigate }) {
@@ -49,6 +50,18 @@ function Lightbox({ photo, photos, onClose, onNavigate }) {
     };
   }, []);
 
+  // Warm the neighbors' full-size originals so arrow-key navigation is instant
+  useEffect(() => {
+    const preload = (p) => {
+      if (p && p.hasMediaFile && p.url && !p.isVideo) {
+        const img = new Image();
+        img.src = p.url;
+      }
+    };
+    preload(photos[currentIndex - 1]);
+    preload(photos[currentIndex + 1]);
+  }, [currentIndex, photos]);
+
   if (!photo) return null;
 
   return (
@@ -96,7 +109,13 @@ function Lightbox({ photo, photos, onClose, onNavigate }) {
                 className="lightbox-video"
               />
             ) : (
-              <img src={photo.url} alt={photo.title} className="lightbox-image" />
+              <ProgressiveImage
+                key={photo.id}
+                thumbnail={photo.thumbnail}
+                full={photo.url}
+                alt={photo.title}
+                className="lightbox-image"
+              />
             )
           ) : (
             <div className="lightbox-no-media">

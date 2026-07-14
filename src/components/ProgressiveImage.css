@@ -1,0 +1,12 @@
+.progressive-img {
+  transition: filter 0.3s ease;
+}
+
+/* Upscaled thumbnail placeholder — blur hides the low resolution */
+.progressive-img.is-thumb {
+  filter: blur(6px);
+}
+
+.progressive-img.is-full {
+  filter: none;
+}

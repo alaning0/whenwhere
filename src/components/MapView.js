@@ -3,6 +3,7 @@ import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import MarkerClusterGroup from 'react-leaflet-cluster';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import ProgressiveImage from './ProgressiveImage';
 import iconRetinaUrl from 'leaflet/dist/images/marker-icon-2x.png';
 import iconUrl from 'leaflet/dist/images/marker-icon.png';
 import shadowUrl from 'leaflet/dist/images/marker-shadow.png';
@@ -28,7 +29,10 @@ function debounce(fn, delay) {
   return debounced;
 }
 
-async function prioritizeThumbnailFilenames(filenames, highPriority = true) {
+// Map bounds and cluster contents are viewport prefetch (many photos on screen),
+// not a single clicked photo — send them to the viewport bucket so they don't
+// evict the urgent bucket that the clicked/selected photo uses.
+async function prioritizeThumbnailFilenames(filenames, highPriority = false) {
   if (!filenames.length) return;
   try {
     await fetch(`${API_URL}/api/thumbnails/priority`, {
@@ -229,7 +233,7 @@ function MapBoundsThumbnailPriority({ photos }) {
 
       candidates.sort((a, b) => a.distSq - b.distSq);
       const filenames = candidates.slice(0, MAP_PRIORITY_LIMIT).map((c) => c.filename);
-      prioritizeThumbnailFilenames(filenames, true);
+      prioritizeThumbnailFilenames(filenames);
     }, 150);
 
     updatePriority();
@@ -302,8 +306,15 @@ const SelectedPhotoOverlay = memo(function SelectedPhotoOverlay({ photo, onClick
               </svg>
               <span>Click fullscreen to play</span>
             </div>
+          ) : isExpanded ? (
+            <ProgressiveImage
+              key={photo.id}
+              thumbnail={photo.thumbnail}
+              full={photo.url}
+              alt={photo.title}
+            />
           ) : (
-            <img src={isExpanded ? photo.url : photo.thumbnail} alt={photo.title} loading="lazy" />
+            <img src={photo.thumbnail} alt={photo.title} loading="lazy" />
           )
         ) : (
           <div className={`overlay-no-media ${isExpanded ? 'expanded' : ''}`}>
@@ -433,7 +444,7 @@ const ClusterPopup = memo(function ClusterPopup({ photos, onPhotoSelect, onClose
       .filter((p) => p.hasMediaFile && p.isImage && !p.isVideo)
       .slice(0, MAP_PRIORITY_LIMIT)
       .map((p) => p.filename);
-    prioritizeThumbnailFilenames(filenames, true);
+    prioritizeThumbnailFilenames(filenames);
   }, [photos]);
 
   // Close on escape key

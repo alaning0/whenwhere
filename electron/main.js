@@ -3,6 +3,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 
 const SERVER_PORT = process.env.PORT || '3002';
 const isDev = !app.isPackaged;
@@ -265,6 +266,9 @@ function getServerEnv() {
     ...process.env,
     PORT: SERVER_PORT,
     WHENWHERE_CONFIG_DIR: app.getPath('userData'),
+    // Give sharp's threadpool room to run image jobs concurrently (server/env.js
+    // applies the same default when started outside Electron).
+    UV_THREADPOOL_SIZE: process.env.UV_THREADPOOL_SIZE || String(Math.max(4, os.cpus().length)),
   };
 
   const staticDir = getStaticDir();
