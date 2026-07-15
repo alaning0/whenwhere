@@ -16,9 +16,16 @@ function debounce(fn, delay) {
   };
 }
 
-// Helper to get date key for comparison (YYYY-MM-DD)
+// Local calendar day key so day breaks match dateShort (also local via toLocaleDateString).
+// Using ISO split('T')[0] was UTC and could disagree with the label around midnight.
 function getDateKey(dateStr) {
-  return dateStr ? dateStr.split('T')[0] : '';
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
 // Virtualized timeline item renderer
@@ -154,7 +161,7 @@ function Timeline({ photos, selectedPhoto, onPhotoSelect, pinMode, onPinModeChan
     }
   }, [requestPriorityThumbnails, sortedPhotos]);
 
-  // Keep sticky date in sync when the selection/list changes before itemsRendered fires
+  // Keep sticky date in sync when the list changes before itemsRendered fires
   useEffect(() => {
     if (sortedPhotos.length === 0) {
       setStickyDateLabel('');
