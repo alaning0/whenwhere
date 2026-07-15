@@ -133,7 +133,9 @@ function detectImageFormat(buffer) {
 let photoCache = null;
 let photoCacheMeta = null; // { hash, withLocation, withMedia } computed once per scan
 let cacheTimestamp = null;
-const CACHE_DURATION = 5 * 60 * 1000;
+// Photo list stays valid until config change, cancel, or explicit /api/refresh.
+// (A short TTL previously forced a full rescan every few minutes, which made
+// "Reading photo metadata…" restart on large libraries.)
 
 // Single-flight scan state. scanEpoch invalidates in-flight scans when the
 // config changes: a scan that started under the old config must not publish
@@ -561,10 +563,10 @@ async function runScan(epoch) {
 }
 
 /**
- * Get the photo list. Single-flight with stale-while-revalidate:
- *  - fresh cache: returned as-is
+ * Get the photo list. Single-flight:
+ *  - completed cache: returned as-is until cleared by config/cancel/refresh
  *  - scan in flight: return current cache (possibly partial / empty) without awaiting
- *  - stale cache: returned immediately while one background rescan refreshes it
+ *  - no cache: start one background scan
  *  - waitForScan: when true, await the in-flight/new scan (used by /api/refresh)
  */
 async function scanImages({ waitForScan = false } = {}) {
@@ -572,7 +574,7 @@ async function scanImages({ waitForScan = false } = {}) {
     return [];
   }
 
-  if (photoCache && cacheTimestamp && (Date.now() - cacheTimestamp) < CACHE_DURATION && !scanPromise) {
+  if (photoCache && !scanPromise) {
     return photoCache;
   }
 
@@ -592,7 +594,7 @@ async function scanImages({ waitForScan = false } = {}) {
   scanPromise = promise;
 
   // Never block the default HTTP response on a full scan — serve whatever we have
-  // (stale, partial, or empty) while the scan continues in the background.
+  // (partial or empty) while the scan continues in the background.
   promise.catch(err => console.error('Background scan failed:', err.message));
   if (waitForScan) {
     return promise;
