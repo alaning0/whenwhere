@@ -2,10 +2,21 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { API_URL } from '../config';
 import './StatusPopover.css';
 
-function StatusPopover() {
+const SCAN_PHASE_LABELS = {
+  idle: 'Idle',
+  starting: 'Starting scan…',
+  scanning: 'Scanning directories…',
+  collecting: 'Collecting files…',
+  processing: 'Reading photo metadata…',
+  sorting: 'Organizing photos…',
+  complete: 'Scan complete',
+};
+
+function StatusPopover({ scanProgress, scanning = false, onChooseDifferentFolder }) {
   const [isOpen, setIsOpen] = useState(false);
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const popoverRef = useRef(null);
 
   const fetchStatus = useCallback(async () => {
@@ -23,18 +34,15 @@ function StatusPopover() {
     }
   }, []);
 
-  // Initial fetch on mount
   useEffect(() => {
     fetchStatus();
   }, [fetchStatus]);
 
-  // Handle polling when open or background task is in progress
   useEffect(() => {
     let intervalId;
-    
-    // Poll more frequently when open, less frequently when closed but processing
-    const shouldPoll = isOpen || (status?.inProgress);
-    const intervalTime = isOpen ? 3000 : 10000;
+
+    const shouldPoll = isOpen || status?.inProgress || scanning;
+    const intervalTime = isOpen || scanning ? 3000 : 10000;
 
     if (shouldPoll) {
       intervalId = setInterval(() => {
@@ -47,9 +55,8 @@ function StatusPopover() {
         clearInterval(intervalId);
       }
     };
-  }, [isOpen, status?.inProgress, fetchStatus]);
+  }, [isOpen, status?.inProgress, scanning, fetchStatus]);
 
-  // Close popover when clicking outside
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (popoverRef.current && !popoverRef.current.contains(event.target)) {
@@ -70,10 +77,33 @@ function StatusPopover() {
     setIsOpen(!isOpen);
   };
 
+  const handleChooseFolder = async () => {
+    if (!onChooseDifferentFolder || cancelling) return;
+    setCancelling(true);
+    try {
+      await onChooseDifferentFolder();
+      setIsOpen(false);
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  const scanActive = Boolean(scanning || scanProgress?.scanning);
+  const scanTotal = scanProgress?.total || 0;
+  const scanCurrent = scanProgress?.current || 0;
+  const scanPercent =
+    scanActive && scanTotal > 0 && ['processing', 'sorting', 'complete'].includes(scanProgress?.phase)
+      ? Math.round((scanCurrent / scanTotal) * 100)
+      : scanActive
+        ? 0
+        : 100;
+  const scanLabel = SCAN_PHASE_LABELS[scanProgress?.phase] || 'Scanning…';
+  const isBusy = scanActive || Boolean(status?.inProgress);
+
   return (
     <div className="status-popover-container" ref={popoverRef}>
-      <button 
-        className={`status-trigger ${isOpen ? 'active' : ''} ${status?.inProgress ? 'processing' : ''}`}
+      <button
+        className={`status-trigger ${isOpen ? 'active' : ''} ${isBusy ? 'processing' : ''}`}
         onClick={togglePopover}
         title="Server Status"
         aria-label="Server status"
@@ -83,7 +113,7 @@ function StatusPopover() {
           <line x1="12" y1="16" x2="12" y2="12"></line>
           <line x1="12" y1="8" x2="12.01" y2="8"></line>
         </svg>
-        {status?.inProgress && (
+        {isBusy && (
           <span className="processing-indicator"></span>
         )}
       </button>
@@ -108,79 +138,127 @@ function StatusPopover() {
             </button>
           </div>
 
-          {status ? (
-            <div className="popover-content">
-              {/* Thumbnail Progress */}
-              <div className="status-section">
-                <div className="section-header">
-                  <span className="section-title">Thumbnail Generation</span>
-                  {status.inProgress && (
-                    <span className="status-badge processing">Processing</span>
-                  )}
-                  {!status.inProgress && status.percentage === 100 && (
-                    <span className="status-badge complete">Complete</span>
-                  )}
-                </div>
-                
-                <div className="progress-bar-container">
-                  <div 
-                    className="progress-bar" 
-                    style={{ width: `${status.percentage}%` }}
-                  ></div>
-                </div>
-                
-                <div className="progress-stats">
-                  <span>{status.generated} / {status.totalImages}</span>
-                  <span className="percentage">{status.percentage}%</span>
-                </div>
+          <div className="popover-content">
+            {/* Metadata Scan */}
+            <div className="status-section">
+              <div className="section-header">
+                <span className="section-title">Metadata Scan</span>
+                {scanActive && (
+                  <span className="status-badge processing">Scanning</span>
+                )}
+                {!scanActive && (
+                  <span className="status-badge complete">Idle</span>
+                )}
               </div>
 
-              {/* Photo Stats */}
-              <div className="status-section">
-                <div className="section-title">Photo Statistics</div>
-                <div className="stats-grid">
-                  <div className="stat-item">
-                    <span className="stat-value">{status.totalPhotos}</span>
-                    <span className="stat-label">Total Photos</span>
-                  </div>
-                  <div className="stat-item">
-                    <span className="stat-value">{status.totalImages}</span>
-                    <span className="stat-label">Image Files</span>
-                  </div>
-                  <div className="stat-item">
-                    <span className="stat-value">{status.withLocation}</span>
-                    <span className="stat-label">With GPS</span>
-                  </div>
-                  <div className="stat-item">
-                    <span className="stat-value">{status.withMedia}</span>
-                    <span className="stat-label">With Media</span>
-                  </div>
-                </div>
+              <div className="scan-phase-label">{scanActive ? scanLabel : 'No scan in progress'}</div>
+
+              <div className="progress-bar-container">
+                <div
+                  className={`progress-bar ${scanActive && scanTotal === 0 ? 'indeterminate' : ''}`}
+                  style={{ width: scanActive && scanTotal === 0 ? '100%' : `${scanActive ? scanPercent : 100}%` }}
+                ></div>
               </div>
 
-              {/* Directories */}
-              <div className="status-section">
-                <div className="section-title">Directories</div>
-                <div className="directory-item">
-                  <span className="dir-label">Images:</span>
-                  <span className="dir-path" title={status.imagesDirectory}>
-                    {status.imagesDirectory}
-                  </span>
-                </div>
-                <div className="directory-item">
-                  <span className="dir-label">Thumbnails:</span>
-                  <span className="dir-path" title={status.thumbnailsDirectory}>
-                    {status.thumbnailsDirectory}
-                  </span>
-                </div>
+              <div className="progress-stats">
+                <span>
+                  {scanActive && scanTotal > 0
+                    ? `${scanCurrent.toLocaleString()} / ${scanTotal.toLocaleString()}`
+                    : scanActive
+                      ? 'Working…'
+                      : 'Ready'}
+                </span>
+                {scanActive && scanTotal > 0 && (
+                  <span className="percentage">{scanPercent}%</span>
+                )}
               </div>
+
+              {scanActive && onChooseDifferentFolder && (
+                <button
+                  type="button"
+                  className="status-action-btn"
+                  onClick={handleChooseFolder}
+                  disabled={cancelling}
+                >
+                  {cancelling ? 'Cancelling…' : 'Choose different folder'}
+                </button>
+              )}
             </div>
-          ) : (
-            <div className="popover-loading">
-              <div className="loading-spinner-small"></div>
-              <span>Loading status...</span>
-            </div>
-          )}
+
+            {status ? (
+              <>
+                {/* Thumbnail Progress */}
+                <div className="status-section">
+                  <div className="section-header">
+                    <span className="section-title">Thumbnail Generation</span>
+                    {status.inProgress && (
+                      <span className="status-badge processing">Processing</span>
+                    )}
+                    {!status.inProgress && status.percentage === 100 && (
+                      <span className="status-badge complete">Complete</span>
+                    )}
+                  </div>
+
+                  <div className="progress-bar-container">
+                    <div
+                      className="progress-bar"
+                      style={{ width: `${status.percentage}%` }}
+                    ></div>
+                  </div>
+
+                  <div className="progress-stats">
+                    <span>{status.generated} / {status.totalImages}</span>
+                    <span className="percentage">{status.percentage}%</span>
+                  </div>
+                </div>
+
+                {/* Photo Stats */}
+                <div className="status-section">
+                  <div className="section-title">Photo Statistics</div>
+                  <div className="stats-grid">
+                    <div className="stat-item">
+                      <span className="stat-value">{status.totalPhotos}</span>
+                      <span className="stat-label">Total Photos</span>
+                    </div>
+                    <div className="stat-item">
+                      <span className="stat-value">{status.totalImages}</span>
+                      <span className="stat-label">Image Files</span>
+                    </div>
+                    <div className="stat-item">
+                      <span className="stat-value">{status.withLocation}</span>
+                      <span className="stat-label">With GPS</span>
+                    </div>
+                    <div className="stat-item">
+                      <span className="stat-value">{status.withMedia}</span>
+                      <span className="stat-label">With Media</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Directories */}
+                <div className="status-section">
+                  <div className="section-title">Directories</div>
+                  <div className="directory-item">
+                    <span className="dir-label">Images:</span>
+                    <span className="dir-path" title={status.imagesDirectory}>
+                      {status.imagesDirectory}
+                    </span>
+                  </div>
+                  <div className="directory-item">
+                    <span className="dir-label">Thumbnails:</span>
+                    <span className="dir-path" title={status.thumbnailsDirectory}>
+                      {status.thumbnailsDirectory}
+                    </span>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="popover-loading">
+                <div className="loading-spinner-small"></div>
+                <span>Loading status...</span>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

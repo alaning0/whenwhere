@@ -28,6 +28,7 @@ import {
   comparePhotosByDate,
   mapWithConcurrency,
   ScanCancelledError,
+  maybePublishPartial,
 } from './utils.js';
 
 // EXIF lives at the start of the file — reading the whole image is wasted I/O
@@ -38,7 +39,7 @@ const EXIF_READ_BYTES = 128 * 1024;
  * @param {string} imagesDir - Path to the directory containing images
  * @param {number} serverPort - Port number for constructing URLs
  * @param {function} onProgress - Optional callback for progress updates: (current, total, phase) => void
- * @param {object} options - { excludeDirs?: string[], isCancelled?: () => boolean }
+ * @param {object} options - { excludeDirs?: string[], isCancelled?: () => boolean, onPartial?: (photos) => void }
  * @returns {Promise<Array>} - Array of photo metadata objects
  */
 export async function scanPhotos(imagesDir, serverPort, onProgress = null, options = {}) {
@@ -64,6 +65,7 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
 
   const total = mediaFiles.length;
   let completed = 0;
+  const gathered = [];
 
   // Phase 2: Processing files (bounded concurrency)
   if (onProgress) onProgress(0, total, 'processing');
@@ -75,10 +77,12 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
     } catch (err) {
       console.error(`[EXIF Adapter] Error processing ${mediaFile}:`, err.message);
     }
+    if (photo) gathered.push(photo);
     completed++;
     if (onProgress && (completed % 100 === 0 || completed === total)) {
       onProgress(completed, total, 'processing');
     }
+    maybePublishPartial(gathered, completed, total, options.onPartial);
     return photo;
   }, { isCancelled: options.isCancelled });
 
@@ -87,6 +91,10 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
   // Phase 3: Sorting
   if (onProgress) onProgress(total, total, 'sorting');
   photos.sort(comparePhotosByDate);
+
+  if (options.onPartial) {
+    options.onPartial(photos);
+  }
 
   // Phase 4: Complete
   if (onProgress) onProgress(total, total, 'complete');

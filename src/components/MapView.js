@@ -150,54 +150,90 @@ const SelectedMarker = memo(function SelectedMarker({ photo, onSelect }) {
   );
 });
 
+// True while the Leaflet map instance still has a live pane (not mid-unmount).
+function isMapAlive(map) {
+  try {
+    return Boolean(map && map._mapPane && map.getContainer()?.isConnected);
+  } catch {
+    return false;
+  }
+}
+
 // Component to handle map view changes when selected photo changes
 function MapViewController({ selectedPhoto, photos, isPreviewExpanded }) {
   const map = useMap();
   const hasInitialized = useRef(false);
-  
+  const lastSelectedIdRef = useRef(null);
+  const lastExpandedRef = useRef(isPreviewExpanded);
+
+  // One-time fit to library bounds (not on every progressive photo batch)
   useEffect(() => {
-    // Guard: ensure map is ready before performing operations
-    if (!map) return;
-    
-    if (selectedPhoto && selectedPhoto.hasLocation) {
-      const currentZoom = map.getZoom();
-      const targetZoom = hasInitialized.current ? currentZoom : 14;
-      
-      // Calculate target position
-      let targetLat = selectedPhoto.lat;
-      let targetLng = selectedPhoto.lng;
-      
-      // When preview is expanded, offset the center so the marker appears
-      // in the center of the visible (right) half of the map
-      if (isPreviewExpanded) {
-        const mapSize = map.getSize();
-        if (mapSize && mapSize.x > 0) {
-          const offsetX = mapSize.x / 4; 
-          const photoPoint = map.project([selectedPhoto.lat, selectedPhoto.lng], targetZoom);
-          const offsetPoint = L.point(photoPoint.x - offsetX, photoPoint.y);
-          const offsetLatLng = map.unproject(offsetPoint, targetZoom);
-          targetLat = offsetLatLng.lat;
-          targetLng = offsetLatLng.lng;
-        }
-      }
-      
-      // Snappier movement
-      map.setView([targetLat, targetLng], targetZoom, {
-        animate: true,
-        duration: 0.3
-      });
-      
+    if (!isMapAlive(map) || hasInitialized.current) return;
+    if (selectedPhoto?.hasLocation) return;
+
+    const photosWithLocation = photos.filter((p) => p.hasLocation);
+    if (photosWithLocation.length === 0) return;
+
+    try {
+      const bounds = L.latLngBounds(photosWithLocation.map((p) => [p.lat, p.lng]));
+      map.fitBounds(bounds, { padding: [50, 50], animate: false });
       hasInitialized.current = true;
-    } else if (photos.length > 0 && !hasInitialized.current) {
-      const photosWithLocation = photos.filter(p => p.hasLocation);
-      if (photosWithLocation.length > 0) {
-        const bounds = L.latLngBounds(photosWithLocation.map(p => [p.lat, p.lng]));
-        map.fitBounds(bounds, { padding: [50, 50] });
-        hasInitialized.current = true;
+    } catch {
+      // Map may have been torn down mid-update
+    }
+  }, [map, photos, selectedPhoto]);
+
+  // Pan/zoom only when the selected photo or preview layout actually changes —
+  // never when the photos array grows during a background scan.
+  useEffect(() => {
+    if (!isMapAlive(map) || !selectedPhoto?.hasLocation) return;
+
+    const selectionChanged = lastSelectedIdRef.current !== selectedPhoto.id;
+    const expandChanged = lastExpandedRef.current !== isPreviewExpanded;
+    lastSelectedIdRef.current = selectedPhoto.id;
+    lastExpandedRef.current = isPreviewExpanded;
+
+    if (hasInitialized.current && !selectionChanged && !expandChanged) {
+      return undefined;
+    }
+
+    const currentZoom = map.getZoom();
+    const targetZoom = hasInitialized.current ? currentZoom : 14;
+
+    let targetLat = selectedPhoto.lat;
+    let targetLng = selectedPhoto.lng;
+
+    if (isPreviewExpanded) {
+      const mapSize = map.getSize();
+      if (mapSize && mapSize.x > 0) {
+        const offsetX = mapSize.x / 4;
+        const photoPoint = map.project([selectedPhoto.lat, selectedPhoto.lng], targetZoom);
+        const offsetPoint = L.point(photoPoint.x - offsetX, photoPoint.y);
+        const offsetLatLng = map.unproject(offsetPoint, targetZoom);
+        targetLat = offsetLatLng.lat;
+        targetLng = offsetLatLng.lng;
       }
     }
-  }, [selectedPhoto, photos, map, isPreviewExpanded]);
-  
+
+    try {
+      map.setView([targetLat, targetLng], targetZoom, {
+        animate: selectionChanged,
+        duration: 0.3,
+      });
+      hasInitialized.current = true;
+    } catch {
+      // Map may have been torn down mid-animation
+    }
+
+    return () => {
+      try {
+        map.stop();
+      } catch {
+        // ignore
+      }
+    };
+  }, [map, selectedPhoto, isPreviewExpanded]);
+
   return null;
 }
 
@@ -214,8 +250,15 @@ function MapBoundsThumbnailPriority({ photos }) {
     if (!map) return;
 
     const updatePriority = debounce(() => {
-      const bounds = map.getBounds();
-      const center = map.getCenter();
+      if (!isMapAlive(map)) return;
+      let bounds;
+      let center;
+      try {
+        bounds = map.getBounds();
+        center = map.getCenter();
+      } catch {
+        return;
+      }
       if (!bounds || !center) return;
 
       const candidates = [];
@@ -242,8 +285,12 @@ function MapBoundsThumbnailPriority({ photos }) {
 
     return () => {
       updatePriority.cancel();
-      map.off('moveend', updatePriority);
-      map.off('zoomend', updatePriority);
+      try {
+        map.off('moveend', updatePriority);
+        map.off('zoomend', updatePriority);
+      } catch {
+        // map may already be gone
+      }
     };
   }, [map]);
 
@@ -495,7 +542,7 @@ const ClusterPopup = memo(function ClusterPopup({ photos, onPhotoSelect, onClose
   );
 });
 
-function MapView({ photos, selectedPhoto, onPhotoSelect, pinMode, onOpenLightbox }) {
+function MapView({ photos, selectedPhoto, onPhotoSelect, pinMode, onOpenLightbox, emptyMessage = null }) {
   const mapRef = useRef(null);
   const [mapLayer, setMapLayer] = useState('street');
   const [isPreviewExpanded, setIsPreviewExpanded] = useState(false);
@@ -679,6 +726,12 @@ function MapView({ photos, selectedPhoto, onPhotoSelect, pinMode, onOpenLightbox
           onPhotoSelect={onPhotoSelect}
           onClose={handleCloseClusterPopup}
         />
+      )}
+
+      {emptyMessage && (
+        <div className="map-empty-overlay">
+          <p>{emptyMessage}</p>
+        </div>
       )}
     </div>
   );

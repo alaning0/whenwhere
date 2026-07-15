@@ -3,9 +3,10 @@
  * 
  * Each adapter must export:
  *   - scanPhotos(imagesDir, serverPort, onProgress, options) - Scans directory and returns photo array
- *     options: { excludeDirs?: string[], isCancelled?: () => boolean }
+ *     options: { excludeDirs?: string[], isCancelled?: () => boolean, onPartial?: (photos) => void }
  *     — excludeDirs: directories the walker must skip (forward to getAllFilesRecursively)
  *     — isCancelled: return true to abort the scan cooperatively (throw ScanCancelledError)
+ *     — onPartial: publish photos gathered so far (~every 250 files) for background UI updates
  *   - getAdapterInfo() - Returns metadata about the adapter
  *
  * Optionally re-export these constants for backward compatibility:

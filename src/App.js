@@ -5,7 +5,6 @@ import ListView from './components/ListView';
 import GridView from './components/GridView';
 import Lightbox from './components/Lightbox';
 import StatusPopover from './components/StatusPopover';
-import ScanProgress from './components/ScanProgress';
 import Settings from './components/Settings';
 import { getCachedPhotos, setCachedPhotos, getCacheMetadata, clearCache } from './services/photoCache';
 import { API_URL } from './config';
@@ -33,7 +32,14 @@ function App() {
   const [selectedPhoto, setSelectedPhoto] = useState(null);
   const [pinMode, setPinMode] = useState('all'); // 'none', 'single', 'all'
   const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);  // Background sync indicator
+  const [syncing, setSyncing] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState({
+    current: 0,
+    total: 0,
+    phase: 'idle',
+    scanning: false,
+  });
   const [error, setError] = useState(null);
   const [showOnlyWithLocation, setShowOnlyWithLocation] = useState(true);
   const [showOnlyWithMedia, setShowOnlyWithMedia] = useState(true);
@@ -42,54 +48,96 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [needsConfig, setNeedsConfig] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
-  const [imagesDir, setImagesDir] = useState('');
   const loadAbortRef = useRef(null);
   const loadGenerationRef = useRef(0);
+  const hadSelectionRef = useRef(false);
+  const progressKeyRef = useRef('');
 
+  // Long-lived scan progress SSE
   useEffect(() => {
-    if (!loading) return;
+    const eventSource = new EventSource(`${API_URL}/api/scan/progress`);
 
-    let cancelled = false;
-    fetch(`${API_URL}/api/config`)
-      .then((response) => (response.ok ? response.json() : null))
-      .then((data) => {
-        if (!cancelled && data?.imagesDir) {
-          setImagesDir(data.imagesDir);
-        }
-      })
-      .catch(() => {});
+    eventSource.onopen = () => {
+      setSseReady(true);
+    };
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        setScanProgress(data);
+        setScanning(Boolean(data.scanning));
+      } catch (err) {
+        console.error('Failed to parse scan progress:', err);
+      }
+    };
+
+    eventSource.onerror = () => {
+      // Allow the app to proceed even if SSE fails
+      setSseReady(true);
+    };
 
     return () => {
-      cancelled = true;
+      eventSource.close();
     };
-  }, [loading, reloadToken]);
+  }, []);
 
-  // Fetch photos - triggered when SSE is ready or after settings save
+  const applyPhotosResponse = useCallback((data, { selectIfEmpty = false } = {}) => {
+    if (data.needsConfig) {
+      setNeedsConfig(true);
+      setSettingsOpen(true);
+      setPhotos([]);
+      setSelectedPhoto(null);
+      setScanning(false);
+      setSyncing(false);
+      return;
+    }
+
+    setNeedsConfig(false);
+    if (typeof data.scanning === 'boolean') {
+      setScanning(data.scanning);
+      setSyncing(data.scanning);
+    }
+
+    const freshPhotos = data.photos || [];
+    setPhotos(freshPhotos);
+
+    if (selectIfEmpty || !hadSelectionRef.current) {
+      if (freshPhotos.length > 0) {
+        selectDefaultPhoto(freshPhotos, setSelectedPhoto);
+        hadSelectionRef.current = true;
+      }
+    }
+
+    if (!data.scanning && freshPhotos.length > 0 && data.hash) {
+      setCachedPhotos(freshPhotos, data.hash);
+    }
+  }, []);
+
+  // Initial / reload photo fetch
   useEffect(() => {
-    if (!sseReady) return; // Wait for SSE to connect first
+    if (!sseReady) return;
 
     const generation = ++loadGenerationRef.current;
     const abortController = new AbortController();
     loadAbortRef.current = abortController;
-    
+
     async function loadPhotos() {
       let hadCachedPhotos = false;
       try {
         setError(null);
-        
-        // Step 1: Try to load from IndexedDB cache first (instant)
+
         const cachedPhotos = await getCachedPhotos();
-        
+
         if (cachedPhotos && cachedPhotos.length > 0) {
           hadCachedPhotos = true;
           console.log(`Loaded ${cachedPhotos.length} photos from cache`);
           setPhotos(cachedPhotos);
           selectDefaultPhoto(cachedPhotos, setSelectedPhoto);
-          setLoading(false);  // Show UI immediately with cached data
-          setSyncing(true);   // Indicate background sync
+          hadSelectionRef.current = true;
+          setLoading(false);
+          setSyncing(true);
         }
-        
-        // Step 2: Fetch fresh data from server (in background if cache exists)
+
         const response = await fetch(`${API_URL}/api/photos`, {
           signal: abortController.signal,
         });
@@ -97,64 +145,85 @@ function App() {
         if (!response.ok) {
           throw new Error('Failed to fetch photos');
         }
-        
+
         const data = await response.json();
         if (generation !== loadGenerationRef.current) return;
 
-        if (data.needsConfig) {
-          setNeedsConfig(true);
-          setSettingsOpen(true);
-          setPhotos([]);
-          setSelectedPhoto(null);
-          setLoading(false);
-          setSyncing(false);
-          return;
-        }
-
-        setNeedsConfig(false);
-        const freshPhotos = data.photos;
-        
-        // Step 3: Check if data has changed
         const cacheMetadata = await getCacheMetadata();
         if (generation !== loadGenerationRef.current) return;
-        const needsUpdate = !cacheMetadata || cacheMetadata.hash !== data.hash;
-        
-        if (needsUpdate) {
-          console.log('Cache outdated, updating with fresh data');
-          setPhotos(freshPhotos);
-          
-          // Only select default photo if we didn't have cached data
-          if (!cachedPhotos || cachedPhotos.length === 0) {
-            selectDefaultPhoto(freshPhotos, setSelectedPhoto);
-          }
-          
-          // Update cache in background
-          setCachedPhotos(freshPhotos, data.hash);
+
+        const needsUpdate = !cacheMetadata || cacheMetadata.hash !== data.hash || data.scanning;
+
+        if (needsUpdate || !hadCachedPhotos) {
+          applyPhotosResponse(data, { selectIfEmpty: !hadCachedPhotos });
         } else {
           console.log('Cache is up to date');
+          if (typeof data.scanning === 'boolean') {
+            setScanning(data.scanning);
+            setSyncing(data.scanning);
+          } else {
+            setSyncing(false);
+          }
         }
-        
       } catch (err) {
         if (err.name === 'AbortError') return;
         console.error('Error fetching photos:', err);
-        // Only show error if we have no cached data (avoid stale `photos` from render closure)
         if (!hadCachedPhotos) {
           setError(err.message);
         }
       } finally {
         if (generation === loadGenerationRef.current) {
           setLoading(false);
-          setSyncing(false);
         }
       }
     }
-    
+
     loadPhotos();
 
     return () => {
       abortController.abort();
     };
-  }, [sseReady, reloadToken]);
+  }, [sseReady, reloadToken, applyPhotosResponse]);
+
+  // While scanning, refetch photos when SSE progress advances (debounced)
+  useEffect(() => {
+    if (!sseReady || loading) return;
+
+    const isActive = scanProgress.scanning || scanning;
+    if (!isActive && scanProgress.phase !== 'complete') return;
+
+    const key = `${scanProgress.phase}:${scanProgress.current}:${scanProgress.total}:${scanProgress.scanning}`;
+    if (key === progressKeyRef.current) return;
+    progressKeyRef.current = key;
+
+    // Always do a final fetch when scan completes
+    const shouldRefetch =
+      scanProgress.scanning ||
+      scanProgress.phase === 'processing' ||
+      scanProgress.phase === 'complete' ||
+      scanProgress.phase === 'sorting';
+
+    if (!shouldRefetch) return;
+
+    const timeoutId = setTimeout(async () => {
+      const generation = loadGenerationRef.current;
+      try {
+        const response = await fetch(`${API_URL}/api/photos`);
+        if (generation !== loadGenerationRef.current) return;
+        if (!response.ok) return;
+        const data = await response.json();
+        if (generation !== loadGenerationRef.current) return;
+        applyPhotosResponse(data);
+        if (!data.scanning) {
+          setSyncing(false);
+        }
+      } catch (err) {
+        console.error('Failed to refresh photos during scan:', err);
+      }
+    }, scanProgress.phase === 'complete' ? 50 : 500);
+
+    return () => clearTimeout(timeoutId);
+  }, [sseReady, loading, scanProgress, scanning, applyPhotosResponse]);
 
   const handleSettingsSaved = useCallback(async () => {
     await clearCache();
@@ -162,7 +231,11 @@ function App() {
     setSettingsOpen(false);
     setPhotos([]);
     setSelectedPhoto(null);
-    setLoading(true);
+    hadSelectionRef.current = false;
+    progressKeyRef.current = '';
+    setScanning(true);
+    setSyncing(true);
+    setLoading(false);
     setReloadToken((token) => token + 1);
   }, []);
 
@@ -176,14 +249,13 @@ function App() {
       console.error('Failed to cancel scan:', err);
     }
 
-    setLoading(false);
+    setPhotos([]);
+    setSelectedPhoto(null);
+    hadSelectionRef.current = false;
+    setScanning(false);
     setSyncing(false);
+    setLoading(false);
     setSettingsOpen(true);
-  }, []);
-  
-  // Callback when SSE connection is ready
-  const handleSseReady = useCallback(() => {
-    setSseReady(true);
   }, []);
 
   // Debounced priority thumbnail request
@@ -198,17 +270,16 @@ function App() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ filenames: [filename], highPriority: true }),
           }).catch(err => console.error('Failed to prioritize thumbnail:', err));
-        }, 150); // 150ms debounce
+        }, 150);
       };
     },
     []
   );
 
-  // Stable callbacks
   const handlePhotoSelect = useCallback((photo) => {
     setSelectedPhoto(photo);
-    
-    // Prioritize loading this photo's thumbnail with debounce
+    hadSelectionRef.current = true;
+
     if (photo && photo.hasMediaFile && photo.isImage) {
       requestPriorityThumbnails(photo.filename);
     }
@@ -234,7 +305,6 @@ function App() {
     setSelectedPhoto(photo);
   }, []);
 
-  // Memoized filtered photos
   const photosForMap = useMemo(() => {
     let result = photos;
     if (showOnlyWithLocation) {
@@ -246,7 +316,6 @@ function App() {
     return result;
   }, [photos, showOnlyWithLocation, showOnlyWithMedia]);
 
-  // Use deferred value for smoother UI during heavy filter operations
   const deferredPhotosForMap = useDeferredValue(photosForMap);
   const isFiltering = photosForMap !== deferredPhotosForMap;
 
@@ -254,21 +323,20 @@ function App() {
     () => photos.filter(p => p.hasLocation),
     [photos]
   );
-  
+
   const photosWithMedia = useMemo(
     () => photos.filter(p => p.hasMediaFile),
     [photos]
   );
 
-  // Keyboard navigation when lightbox is not open
   useEffect(() => {
-    if (lightboxOpen) return; // Lightbox handles its own keyboard events
-    
+    if (lightboxOpen) return;
+
     const handleKeyDown = (e) => {
       if (viewMode !== 'map') return;
-      
+
       const currentIndex = deferredPhotosForMap.findIndex(p => p.id === selectedPhoto?.id);
-      
+
       if (e.key === 'ArrowLeft' && currentIndex > 0) {
         setSelectedPhoto(deferredPhotosForMap[currentIndex - 1]);
       } else if (e.key === 'ArrowRight' && currentIndex < deferredPhotosForMap.length - 1) {
@@ -277,7 +345,7 @@ function App() {
         setLightboxOpen(true);
       }
     };
-    
+
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [lightboxOpen, viewMode, deferredPhotosForMap, selectedPhoto]);
@@ -285,11 +353,11 @@ function App() {
   if (loading) {
     return (
       <div className="app loading-screen">
-        <ScanProgress
-          onReady={handleSseReady}
-          onChooseDifferentFolder={handleChooseDifferentFolder}
-          imagesDir={imagesDir}
-        />
+        <div className="loading-content">
+          <div className="loading-spinner"></div>
+          <h2>Connecting…</h2>
+          <p>Starting WhenWhere</p>
+        </div>
         <Settings
           open={settingsOpen}
           required={needsConfig}
@@ -316,9 +384,10 @@ function App() {
     );
   }
 
+  const showWorking = syncing || scanning || isFiltering;
+
   return (
     <div className="app">
-      {/* Header */}
       <header className="app-header">
         <div className="header-left">
           <div className="logo">
@@ -329,12 +398,16 @@ function App() {
               </svg>
             </div>
             <span className="logo-text">WhenWhere</span>
-            {(syncing || isFiltering) && (
-              <span 
-                className="sync-indicator" 
-                title={isFiltering 
-                  ? "Filtering photos based on current selection..." 
-                  : "Loading updated photo data from server..."}
+            {showWorking && (
+              <span
+                className="sync-indicator"
+                title={
+                  isFiltering
+                    ? 'Filtering photos based on current selection...'
+                    : scanning
+                      ? 'Reading photo metadata in the background...'
+                      : 'Loading updated photo data from server...'
+                }
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <polyline points="23 4 23 10 17 10"></polyline>
@@ -344,7 +417,7 @@ function App() {
             )}
           </div>
         </div>
-        
+
         <nav className="view-switcher">
           <button
             className={`view-btn ${viewMode === 'map' ? 'active' : ''}`}
@@ -357,7 +430,7 @@ function App() {
             </svg>
             <span>Map</span>
           </button>
-          
+
           <button
             className={`view-btn ${viewMode === 'list' ? 'active' : ''}`}
             onClick={setListView}
@@ -372,7 +445,7 @@ function App() {
             </svg>
             <span>List</span>
           </button>
-          
+
           <button
             className={`view-btn ${viewMode === 'grid' ? 'active' : ''}`}
             onClick={setGridView}
@@ -386,7 +459,7 @@ function App() {
             <span>Grid</span>
           </button>
         </nav>
-        
+
         <div className="header-right">
           <div className="photo-stats">
             <span className="stat" title="Total photos">
@@ -424,15 +497,33 @@ function App() {
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
             </svg>
           </button>
-          <StatusPopover />
+          <StatusPopover
+            scanProgress={scanProgress}
+            scanning={scanning}
+            onChooseDifferentFolder={handleChooseDifferentFolder}
+          />
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="app-main">
         {viewMode === 'map' && (
           <div className="map-layout">
-            {deferredPhotosForMap.length === 0 ? (
+            {(deferredPhotosForMap.length > 0 || scanning) ? (
+              <MapView
+                photos={deferredPhotosForMap}
+                selectedPhoto={selectedPhoto}
+                onPhotoSelect={handlePhotoSelect}
+                pinMode={pinMode}
+                onOpenLightbox={openLightbox}
+                emptyMessage={
+                  deferredPhotosForMap.length === 0
+                    ? (scanning
+                      ? 'Scanning photo library… Photos with GPS will appear as they are found.'
+                      : null)
+                    : null
+                }
+              />
+            ) : (
               <div className="no-location-message">
                 <div className="message-content">
                   <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -444,14 +535,6 @@ function App() {
                   <p className="hint">Try adjusting filters or check if XMP files contain GPS data.</p>
                 </div>
               </div>
-            ) : (
-              <MapView
-                photos={deferredPhotosForMap}
-                selectedPhoto={selectedPhoto}
-                onPhotoSelect={handlePhotoSelect}
-                pinMode={pinMode}
-                onOpenLightbox={openLightbox}
-              />
             )}
             <Timeline
               photos={deferredPhotosForMap.length > 0 ? deferredPhotosForMap : photos}
@@ -462,7 +545,7 @@ function App() {
             />
           </div>
         )}
-        
+
         {viewMode === 'list' && (
           <ListView
             photos={photos}
@@ -471,7 +554,7 @@ function App() {
             onOpenLightbox={openLightbox}
           />
         )}
-        
+
         {viewMode === 'grid' && (
           <GridView
             photos={photos}
@@ -482,7 +565,6 @@ function App() {
         )}
       </main>
 
-      {/* Lightbox */}
       {lightboxOpen && (
         <Lightbox
           photo={selectedPhoto}

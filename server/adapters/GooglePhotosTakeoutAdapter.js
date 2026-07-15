@@ -35,6 +35,7 @@ import {
   comparePhotosByDate,
   mapWithConcurrency,
   ScanCancelledError,
+  maybePublishPartial,
 } from './utils.js';
 
 // Takeout files that are never photo sidecars, by exact basename
@@ -58,7 +59,7 @@ function isNonPhotoJson(jsonPath) {
  * @param {string} imagesDir - Path to the directory containing images and JSON files
  * @param {number} serverPort - Port number for constructing URLs
  * @param {function} onProgress - Optional callback for progress updates: (current, total, phase) => void
- * @param {object} options - { excludeDirs?: string[], isCancelled?: () => boolean }
+ * @param {object} options - { excludeDirs?: string[], isCancelled?: () => boolean, onPartial?: (photos) => void }
  * @returns {Promise<Array>} - Array of photo metadata objects
  */
 export async function scanPhotos(imagesDir, serverPort, onProgress = null, options = {}) {
@@ -84,6 +85,7 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
 
   const total = jsonFiles.length;
   let completed = 0;
+  const gathered = [];
 
   // Phase 2: Processing files (bounded concurrency)
   if (onProgress) onProgress(0, total, 'processing');
@@ -95,10 +97,12 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
     } catch (err) {
       console.error(`[Takeout Adapter] Error processing ${jsonFile}:`, err.message);
     }
+    if (photo) gathered.push(photo);
     completed++;
     if (onProgress && (completed % 100 === 0 || completed === total)) {
       onProgress(completed, total, 'processing');
     }
+    maybePublishPartial(gathered, completed, total, options.onPartial);
     return photo;
   }, { isCancelled: options.isCancelled });
 
@@ -107,6 +111,10 @@ export async function scanPhotos(imagesDir, serverPort, onProgress = null, optio
   // Phase 3: Sorting
   if (onProgress) onProgress(total, total, 'sorting');
   photos.sort(comparePhotosByDate);
+
+  if (options.onPartial) {
+    options.onPartial(photos);
+  }
 
   // Phase 4: Complete
   if (onProgress) onProgress(total, total, 'complete');

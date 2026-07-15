@@ -13,3 +13,9 @@ import os from 'os';
 if (!process.env.UV_THREADPOOL_SIZE) {
   process.env.UV_THREADPOOL_SIZE = String(Math.max(4, os.cpus().length));
 }
+
+// Quiet libvips chatter (e.g. "source: bad seek") for HEICs Sharp can't decode
+// before we fall back to heic-convert — expected on Windows Apple HEIC libraries.
+if (process.env.VIPS_WARNING === undefined) {
+  process.env.VIPS_WARNING = '0';
+}

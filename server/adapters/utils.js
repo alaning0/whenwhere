@@ -16,6 +16,24 @@ export const MEDIA_EXTENSIONS = [...IMAGE_EXTENSIONS, ...VIDEO_EXTENSIONS];
 // How many files each adapter processes concurrently during a scan
 export const SCAN_CONCURRENCY = 12;
 
+/** How often adapters publish mid-scan photo batches to the server cache */
+export const PARTIAL_PUBLISH_INTERVAL = 250;
+
+/**
+ * Publish photos gathered so far during a concurrent scan, sorted by date
+ * so the UI timeline/map stay chronological while the scan is in progress.
+ * @param {Array} gathered - Photos collected so far
+ * @param {number} completed - Files finished so far
+ * @param {number} total - Total files to process
+ * @param {function|null|undefined} onPartial
+ */
+export function maybePublishPartial(gathered, completed, total, onPartial) {
+  if (!onPartial) return;
+  if (completed % PARTIAL_PUBLISH_INTERVAL === 0 || completed === total) {
+    onPartial(gathered.slice().sort(comparePhotosByDate));
+  }
+}
+
 export class ScanCancelledError extends Error {
   constructor() {
     super('Scan cancelled');

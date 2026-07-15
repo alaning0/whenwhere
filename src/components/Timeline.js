@@ -85,26 +85,35 @@ function Timeline({ photos, selectedPhoto, onPhotoSelect, pinMode, onPinModeChan
   const containerRef = useRef(null);
   const [calendarOpen, setCalendarOpen] = useState(false);
 
-  // Photos are already sorted by date from server - no need to re-sort!
-  // Build an ID->index map for O(1) lookups and track first-of-day indices
+  // Sort by date so progressive/partial scan updates stay chronological
+  // (server usually sorts, but mid-scan batches can arrive in file-walk order)
   const { photoIndexMap, sortedPhotos, firstOfDayIndices } = useMemo(() => {
+    const sorted = [...photos].sort((a, b) => {
+      if (a.date < b.date) return -1;
+      if (a.date > b.date) return 1;
+      if (a.id < b.id) return -1;
+      if (a.id > b.id) return 1;
+      return 0;
+    });
+
     const indexMap = new Map();
     const dayIndices = new Set();
     let lastDateKey = '';
-    
-    photos.forEach((photo, index) => {
+
+    sorted.forEach((photo, index) => {
       indexMap.set(photo.id, index);
-      
-      // Check if this is the first photo of a new day
+
       const dateKey = getDateKey(photo.date);
       if (dateKey !== lastDateKey) {
         dayIndices.add(index);
         lastDateKey = dateKey;
       }
     });
-    
-    return { photoIndexMap: indexMap, sortedPhotos: photos, firstOfDayIndices: dayIndices };
+
+    return { photoIndexMap: indexMap, sortedPhotos: sorted, firstOfDayIndices: dayIndices };
   }, [photos]);
+
+  const [stickyDateLabel, setStickyDateLabel] = useState('');
   
   // O(1) lookup for current index instead of O(n) findIndex
   const currentIndex = useMemo(
@@ -139,7 +148,24 @@ function Timeline({ photos, selectedPhoto, onPhotoSelect, pinMode, onPinModeChan
   // Handle visible items change from react-window
   const handleItemsRendered = useCallback(({ visibleStartIndex, visibleStopIndex }) => {
     requestPriorityThumbnails(visibleStartIndex, visibleStopIndex);
-  }, [requestPriorityThumbnails]);
+    const leftmost = sortedPhotos[visibleStartIndex];
+    if (leftmost?.dateShort) {
+      setStickyDateLabel(leftmost.dateShort);
+    }
+  }, [requestPriorityThumbnails, sortedPhotos]);
+
+  // Keep sticky date in sync when the selection/list changes before itemsRendered fires
+  useEffect(() => {
+    if (sortedPhotos.length === 0) {
+      setStickyDateLabel('');
+      return;
+    }
+    const idx = currentIndex >= 0 ? currentIndex : 0;
+    const photo = sortedPhotos[idx];
+    if (photo?.dateShort) {
+      setStickyDateLabel(photo.dateShort);
+    }
+  }, [sortedPhotos, currentIndex]);
 
   // Item data for virtualized list
   const itemData = useMemo(() => ({
@@ -289,6 +315,12 @@ function Timeline({ photos, selectedPhoto, onPhotoSelect, pinMode, onPinModeChan
       
       <div className="timeline-track-container" ref={containerRef}>
         <div className="timeline-line"></div>
+
+        {stickyDateLabel && (
+          <div className="timeline-sticky-date" aria-live="polite">
+            {stickyDateLabel}
+          </div>
+        )}
         
         {/* Left scroll button */}
         <button className="timeline-scroll-btn left" onClick={handleScrollLeft} title="Scroll left">

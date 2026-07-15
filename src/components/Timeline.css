@@ -148,6 +148,47 @@
   overflow: hidden;
 }
 
+/* Always-visible date for the leftmost photo in view.
+   top matches track padding so it sits on the same line as .timeline-day-label.
+   z-index is below the virtual list so day-change labels paint on top when they overlap. */
+.timeline-sticky-date {
+  position: absolute;
+  left: 50px;
+  top: 16px;
+  z-index: 2;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--accent-primary);
+  background: var(--bg-secondary);
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--accent-primary);
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 8px 0 10px 4px var(--bg-secondary);
+}
+
+/* Day label for first photo of each day (same line / style as sticky date) */
+.timeline-day-label {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--accent-primary);
+  background: var(--bg-secondary);
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--accent-primary);
+  white-space: nowrap;
+  z-index: 4;
+}
+
 /* Scroll buttons */
 .timeline-scroll-btn {
   position: absolute;
@@ -191,6 +232,8 @@
 }
 
 .timeline-virtual-list {
+  position: relative;
+  z-index: 3;
   overflow-x: auto !important;
   overflow-y: hidden !important;
 }
@@ -240,24 +283,6 @@
   position: relative;
   z-index: 1;
   padding-top: 2px;
-}
-
-/* Day label for first photo of each day */
-.timeline-day-label {
-  position: absolute;
-  top: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 9px;
-  font-weight: 600;
-  color: var(--accent-primary);
-  background: var(--bg-card);
-  padding: 2px 6px;
-  border-radius: 4px;
-  border: 1px solid var(--accent-primary);
-  white-space: nowrap;
-  z-index: 3;
 }
 
 .timeline-item.first-of-day {

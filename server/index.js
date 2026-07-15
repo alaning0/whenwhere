@@ -212,6 +212,18 @@ async function convertHeicBufferToJpeg(buffer) {
   }
 }
 
+/** Expected when Sharp lacks a HEIF codec / can't seek Apple HEIC — we fall back. */
+function isExpectedHeicDecodeNoise(message = '') {
+  const m = String(message).toLowerCase();
+  return (
+    m.includes('bad seek') ||
+    m.includes('heif') ||
+    m.includes('no decoding plugin') ||
+    m.includes('unsupported image format') ||
+    m.includes('compression format')
+  );
+}
+
 // All sharp/heic image jobs (thumbnails and full-size HEIC conversions) share
 // one semaphore. sharp.concurrency(1) makes each job use a single threadpool
 // thread, so IMAGE_WORK_LIMIT concurrent jobs map to that many threads (see
@@ -310,12 +322,13 @@ async function getConvertedHeic(sourcePath, filename, opts = {}) {
           .toFile(outPath);
         return outPath;
       } catch (e) {
-        console.log(`Sharp failed for full image ${filename}, attempting heic-convert fallback...`);
         try {
           const buffer = await fsp.readFile(sourcePath);
           const jpegBuffer = await convertHeicBufferToJpeg(buffer);
           if (!jpegBuffer) {
-            console.error(`Failed to convert full HEIC ${filename}:`, e.message);
+            if (!isExpectedHeicDecodeNoise(e.message)) {
+              console.error(`Failed to convert full HEIC ${filename}:`, e.message);
+            }
             return null;
           }
           await fsp.writeFile(outPath, jpegBuffer);
@@ -334,22 +347,13 @@ async function getConvertedHeic(sourcePath, filename, opts = {}) {
   return job;
 }
 
-// Concurrent requests for the same thumbnail share one generation job —
-// two writers on the same output path would corrupt it.
+// Concurrent encodes for the same thumbnail share one job — two writers on the
+// same path would corrupt it. Slot acquisition happens *before* joining so an
+// interactive click is not stuck behind a background waiter for the same file.
 const inFlightThumbnails = new Map();
 
 async function generateThumbnail(filename, opts = {}) {
   const thumbnailPath = getThumbnailPath(filename);
-  if (inFlightThumbnails.has(thumbnailPath)) {
-    return inFlightThumbnails.get(thumbnailPath);
-  }
-  const job = generateThumbnailInner(filename, thumbnailPath, opts)
-    .finally(() => inFlightThumbnails.delete(thumbnailPath));
-  inFlightThumbnails.set(thumbnailPath, job);
-  return job;
-}
-
-async function generateThumbnailInner(filename, thumbnailPath, opts = {}) {
   const imagesDir = getImagesDir();
   const sourcePath = (filename.includes('/') || filename.includes('\\'))
     ? filename
@@ -359,12 +363,12 @@ async function generateThumbnailInner(filename, thumbnailPath, opts = {}) {
     return null;
   }
 
+  // Fast path: already on disk — no slot needed
   const existing = await fsp.stat(thumbnailPath).catch(() => null);
   if (existing) {
     if (existing.size > 0) {
       return thumbnailPath;
     }
-    // Zero-byte thumbnail from an interrupted write — regenerate it
     try {
       await fsp.unlink(thumbnailPath);
     } catch (e) {
@@ -375,6 +379,43 @@ async function generateThumbnailInner(filename, thumbnailPath, opts = {}) {
     }
   }
 
+  // Acquire first so interactive requests jump the global semaphore, then share
+  // the encode with any other waiter for the same path.
+  const granted = await acquireImageSlot({
+    interactive: !!opts.interactive,
+    isAborted: opts.isAborted,
+  });
+  if (!granted) {
+    return null;
+  }
+
+  let holdingSlot = true;
+  try {
+    // Another job may have finished while we waited for a slot
+    const raced = await fsp.stat(thumbnailPath).catch(() => null);
+    if (raced && raced.size > 0) {
+      return thumbnailPath;
+    }
+
+    if (inFlightThumbnails.has(thumbnailPath)) {
+      const shared = inFlightThumbnails.get(thumbnailPath);
+      releaseImageSlot();
+      holdingSlot = false;
+      return shared;
+    }
+
+    const job = generateThumbnailInner(filename, sourcePath, thumbnailPath)
+      .finally(() => inFlightThumbnails.delete(thumbnailPath));
+    inFlightThumbnails.set(thumbnailPath, job);
+    return await job;
+  } finally {
+    if (holdingSlot) {
+      releaseImageSlot();
+    }
+  }
+}
+
+async function generateThumbnailInner(filename, sourcePath, thumbnailPath) {
   try {
     await fsp.access(sourcePath, fs.constants.F_OK);
   } catch (e) {
@@ -385,12 +426,6 @@ async function generateThumbnailInner(filename, thumbnailPath, opts = {}) {
 
   if (getVideoExtensions().includes(ext)) {
     return null;
-  }
-
-  // Gate the heavy read + sharp work on the shared image-work semaphore
-  const granted = await acquireImageSlot({ interactive: opts.interactive, isAborted: opts.isAborted });
-  if (!granted) {
-    return null; // request went away while queued
   }
 
   try {
@@ -407,7 +442,6 @@ async function generateThumbnailInner(filename, thumbnailPath, opts = {}) {
         .toFile(thumbnailPath);
     } catch (sharpError) {
       if (ext === '.heic' || sharpError.message.includes('heif') || sharpError.message.includes('seek')) {
-        console.log(`Sharp failed for ${filename} (${sharpError.message}), attempting heic-convert fallback...`);
         const jpegBuffer = await convertHeicBufferToJpeg(buffer);
         if (jpegBuffer) {
           await sharp(jpegBuffer)
@@ -429,12 +463,10 @@ async function generateThumbnailInner(filename, thumbnailPath, opts = {}) {
 
     return thumbnailPath;
   } catch (error) {
-    if (!error.message.includes('unsupported image format')) {
+    if (!isExpectedHeicDecodeNoise(error.message)) {
       console.error(`Failed to generate thumbnail for ${filename}:`, error.message);
     }
     return null;
-  } finally {
-    releaseImageSlot();
   }
 }
 
@@ -481,9 +513,17 @@ async function runScan(epoch) {
       notifyProgressListeners();
     };
 
+    const onPartial = (photosSoFar) => {
+      if (epoch !== scanEpoch) return;
+      photoCache = photosSoFar;
+      photoCacheMeta = computeCacheMeta(photosSoFar);
+      cacheTimestamp = Date.now();
+    };
+
     const photos = await metadataAdapter.scanPhotos(getImagesDir(), getPort(), onProgress, {
       excludeDirs: [getThumbnailsDir()],
       isCancelled: () => epoch !== scanEpoch,
+      onPartial,
     });
 
     if (epoch !== scanEpoch) {
@@ -523,20 +563,24 @@ async function runScan(epoch) {
 /**
  * Get the photo list. Single-flight with stale-while-revalidate:
  *  - fresh cache: returned as-is
- *  - scan in flight: existing cache if present, otherwise join the scan
+ *  - scan in flight: return current cache (possibly partial / empty) without awaiting
  *  - stale cache: returned immediately while one background rescan refreshes it
+ *  - waitForScan: when true, await the in-flight/new scan (used by /api/refresh)
  */
-async function scanImages() {
+async function scanImages({ waitForScan = false } = {}) {
   if (!isConfigured()) {
     return [];
   }
 
-  if (photoCache && cacheTimestamp && (Date.now() - cacheTimestamp) < CACHE_DURATION) {
+  if (photoCache && cacheTimestamp && (Date.now() - cacheTimestamp) < CACHE_DURATION && !scanPromise) {
     return photoCache;
   }
 
   if (scanPromise) {
-    return photoCache || scanPromise;
+    if (waitForScan) {
+      return scanPromise;
+    }
+    return photoCache || [];
   }
 
   const epoch = scanEpoch;
@@ -547,13 +591,22 @@ async function scanImages() {
   });
   scanPromise = promise;
 
-  if (photoCache) {
-    // Serve stale data now; the background rescan updates the cache when done
-    promise.catch(err => console.error('Background rescan failed:', err.message));
-    return photoCache;
+  // Never block the default HTTP response on a full scan — serve whatever we have
+  // (stale, partial, or empty) while the scan continues in the background.
+  promise.catch(err => console.error('Background scan failed:', err.message));
+  if (waitForScan) {
+    return promise;
   }
+  return photoCache || [];
+}
 
-  return promise;
+function getScanStatusPayload() {
+  return {
+    scanning: Boolean(scanProgress.scanning || scanPromise),
+    scanPhase: scanProgress.phase,
+    scanCurrent: scanProgress.current,
+    scanTotal: scanProgress.total,
+  };
 }
 
 // API Routes
@@ -627,6 +680,7 @@ app.get('/api/photos', asyncHandler(async (req, res) => {
         hash: 'unconfigured',
         needsConfig: true,
         photos: [],
+        ...getScanStatusPayload(),
       });
     }
 
@@ -654,7 +708,8 @@ app.get('/api/photos', asyncHandler(async (req, res) => {
       withMedia: meta.withMedia,
       hash: meta.hash,
       needsConfig: false,
-      photos: filtered
+      photos: filtered,
+      ...getScanStatusPayload(),
     });
   } catch (error) {
     console.error('Error fetching photos:', error);
@@ -784,7 +839,7 @@ app.post('/api/refresh', asyncHandler(async (req, res) => {
   // Null the cache first so the scan logic cannot serve the cache we are busting
   photoCache = null;
   cacheTimestamp = null;
-  const photos = await scanImages();
+  const photos = await scanImages({ waitForScan: true });
   res.json({ message: 'Cache refreshed', count: photos.length });
 }));
 
@@ -835,8 +890,12 @@ app.post('/api/thumbnails/priority', asyncHandler(async (req, res) => {
 
 /** Next prefetch file — urgent bucket first, then viewport. */
 function nextPriorityFile() {
-  if (urgentQueue.length > 0) return urgentQueue.shift();
-  if (viewportQueue.length > 0) return viewportQueue.shift();
+  if (urgentQueue.length > 0) {
+    return { filename: urgentQueue.shift(), interactive: true };
+  }
+  if (viewportQueue.length > 0) {
+    return { filename: viewportQueue.shift(), interactive: false };
+  }
   return null;
 }
 
@@ -848,21 +907,28 @@ async function processPriorityQueue() {
   processingPriority = true;
 
   const processNext = async () => {
-    let filename;
+    let next;
     // Re-checks urgent first on every iteration, so a click mid-drain jumps ahead
-    while ((filename = nextPriorityFile()) !== null) {
-      if (!(await thumbnailExists(filename))) {
-        await generateThumbnail(filename); // background lane — this is prefetch
+    while ((next = nextPriorityFile()) !== null) {
+      if (!(await thumbnailExists(next.filename))) {
+        // Urgent (clicked) uses the interactive lane so it jumps the global
+        // image-work semaphore; viewport prefetch stays background.
+        await generateThumbnail(next.filename, { interactive: next.interactive });
       }
     }
   };
 
-  const workerCount = Math.min(IMAGE_WORK_LIMIT, urgentQueue.length + viewportQueue.length);
+  const workerCount = Math.min(IMAGE_WORK_LIMIT, Math.max(1, urgentQueue.length + viewportQueue.length));
   const workers = Array(workerCount).fill(null).map(() => processNext());
 
   await Promise.all(workers);
 
   processingPriority = false;
+
+  // More items may have arrived while workers were draining
+  if (urgentQueue.length > 0 || viewportQueue.length > 0) {
+    processPriorityQueue();
+  }
 }
 
 app.get('/api/thumbnails/status', asyncHandler(async (req, res) => {
