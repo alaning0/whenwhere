@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import sharp from 'sharp';
 import heicConvert from 'heic-convert';
+import ExifReader from 'exifreader';
 import {
   getConfig,
   isConfigured,
@@ -135,7 +136,7 @@ let photoCacheMeta = null; // { hash, withLocation, withMedia } computed once pe
 let cacheTimestamp = null;
 // Photo list stays valid until config change, cancel, or explicit /api/refresh.
 // (A short TTL previously forced a full rescan every few minutes, which made
-// "Reading photo metadata…" restart on large libraries.)
+// "Reading photo metadata…” restart on large libraries.)
 
 // Single-flight scan state. scanEpoch invalidates in-flight scans when the
 // config changes: a scan that started under the old config must not publish
@@ -354,6 +355,26 @@ async function getConvertedHeic(sourcePath, filename, opts = {}) {
 // interactive click is not stuck behind a background waiter for the same file.
 const inFlightThumbnails = new Map();
 
+async function tryReadEmbeddedThumbnailBuffer(filename, sourcePath) {
+  const ext = path.extname(filename).toLowerCase();
+  if (ext !== '.jpg' && ext !== '.jpeg') {
+    return null;
+  }
+
+  try {
+    const buffer = await fsp.readFile(sourcePath);
+    const tags = ExifReader.load(buffer, { expanded: false });
+    const embedded = tags?.thumbnail || tags?.Thumbnail || tags?.JPEGThumbnail;
+
+    if (embedded && embedded.data && Buffer.isBuffer(embedded.data) && embedded.data.length > 0) {
+      return Buffer.from(embedded.data);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function generateThumbnail(filename, opts = {}) {
   const thumbnailPath = getThumbnailPath(filename);
   const imagesDir = getImagesDir();
@@ -431,6 +452,20 @@ async function generateThumbnailInner(filename, sourcePath, thumbnailPath) {
   }
 
   try {
+    const embeddedThumbnail = await tryReadEmbeddedThumbnailBuffer(filename, sourcePath);
+    if (embeddedThumbnail) {
+      await sharp(embeddedThumbnail)
+        .resize(THUMBNAIL_WIDTH, null, {
+          withoutEnlargement: true,
+          fit: 'inside'
+        })
+        .webp({ quality: THUMBNAIL_QUALITY })
+        .toFile(thumbnailPath);
+
+      thumbnailStatusCache = null;
+      return thumbnailPath;
+    }
+
     const buffer = await fsp.readFile(sourcePath);
 
     try {
